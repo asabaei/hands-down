@@ -103,3 +103,49 @@ FEEDBACK_KEYS = {             # key -> what the last few seconds really were
 # ---- training clean-up ----
 CLEAN_WINDOWS = True          # drop windows from harmless/habit clips where the hand never comes near the face
 MERGE_IDLE_INTO_HARMLESS = True   # train idle and harmless contact as one "not a habit" class
+
+# ---- database (all events go to SQLite as well as the CSV files) ----
+DB_FILENAME = "habits.db"     # lives in the data folder (data/habits.db by default)
+HEARTBEAT_SECONDS = 10        # how often a running tracker marks itself as alive
+
+# ---- active-window tracker (python -m backend.activity, or started by the server) ----
+ACTIVITY_POLL_SECONDS = 2     # how often the focused window is checked
+ACTIVITY_IDLE_SECONDS = 120   # no keyboard/mouse input this long counts as idle
+ACTIVITY_STORE_TITLES = False # window titles can be private; only app, site and category are kept
+DOOMSCROLL_CATEGORIES = ["social", "video"]   # time in these counts toward doomscrolling
+
+# ---- analytics (patterns the assistant can look up) ----
+STREAK_GAP_SECONDS = 120      # leaving an app for less than this doesn't end a session in it
+STREAK_BUCKETS_MIN = [0, 15, 45, 90]   # "minutes into the current app session" buckets
+MIN_EXPOSURE_MINUTES = 30     # ignore contexts you spent less time in than this
+MIN_PATTERN_EVENTS = 5        # a pattern needs at least this many habit events
+PATTERN_FDR = 0.10            # false discovery rate for find_patterns (Benjamini-Hochberg)
+
+# ---- local LLM (Ollama) ----
+OLLAMA_URL = "http://localhost:11434"
+OLLAMA_MODEL = "qwen2.5:7b-instruct"   # any Ollama model with tool calling works
+LLM_MAX_TOOL_ROUNDS = 6
+OLLAMA_KEEP_ALIVE = "30m"     # keep the model in memory between questions (Ollama's default unloads it after 5 min)
+OLLAMA_NUM_CTX = 8192         # context window; big enough for the tool definitions plus a few tool results
+
+# ---- nudges and the bandit ----
+NUDGES_ENABLED = True
+DOOMSCROLL_MINUTES = 20       # this long in a doomscroll category (with short breaks allowed) triggers a nudge
+NUDGE_COOLDOWN_MINUTES = 10   # at most one nudge per trigger type in this time
+NUDGE_GRACE_SECONDS = 60      # time to act on the nudge before it is judged
+NUDGE_OUTCOME_MINUTES = 5     # success = no habit contact / doomscrolling from grace until here
+NUDGE_RANDOM_FRACTION = 0.2   # share of nudges picked uniformly at random (the comparison group)
+NUDGE_ARMS = {
+    "walk": "Take a 2-minute walk",
+    "fidget": "Grab a fidget toy or stress ball",
+    "switch_task": "Switch to a different task for a few minutes",
+    "water": "Get a glass of water",
+    "breathe": "Do 5 slow breaths with your hands on the desk",
+    "stretch": "Stand up and stretch your arms over your head",
+    "hands_busy": "Hold something in both hands (pen, mug, putty)",
+    "close_tab": "Close this tab and write down what you came here for",
+}
+NUDGE_ARMS_BY_TRIGGER = {
+    "habit": ["walk", "fidget", "switch_task", "water", "breathe", "stretch", "hands_busy"],
+    "doomscroll": ["walk", "switch_task", "water", "breathe", "stretch", "close_tab"],
+}

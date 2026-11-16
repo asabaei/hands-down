@@ -7,14 +7,35 @@ import numpy as np
 
 import config
 import features
+from backend import db
 
 data_dir = "data"
+conn = None          # SQLite connection (events also go to data/habits.db)
+session_id = None
+last_heartbeat = 0
 
 
 def setup(path):
-    global data_dir
+    global data_dir, conn, session_id, last_heartbeat
     data_dir = path
     os.makedirs(data_dir, exist_ok=True)
+    conn = db.connect(os.path.join(data_dir, config.DB_FILENAME))
+    session_id = db.start_session(conn, "webcam")
+    last_heartbeat = time.time()
+
+
+def heartbeat(now):
+    # tells the analytics and the nudge engine the webcam is still watching
+    global last_heartbeat
+    if conn is not None and now - last_heartbeat >= config.HEARTBEAT_SECONDS:
+        db.heartbeat(conn, session_id, now)
+        last_heartbeat = now
+
+
+def log_alert(now, region, behavior):
+    # the moment an alert fires (the nudge engine reacts to this)
+    if conn is not None:
+        db.log_alert(conn, session_id, now, region, behavior)
 
 
 def stamp(t):
@@ -42,6 +63,8 @@ def add_row(filename, header, row):
 def log_event(start, region, behavior, alerted, duration):
     add_row("events.csv", ["start", "region", "behavior", "alerted", "duration_seconds"],
             [stamp(start), region, behavior, "yes" if alerted else "no", round(duration, 2)])
+    if conn is not None:
+        db.log_touch(conn, session_id, start, start + duration, region, behavior, alerted)
 
 
 def log_label(start, end):
@@ -66,6 +89,8 @@ def log_session(session_start, session_end, events):
             ["start", "duration_min", "touches", "contact_seconds", "longest_seconds", "top_region"],
             [stamp(session_start), round(minutes, 2), touches, round(contact, 1),
              round(longest, 1), top_region])
+    if conn is not None:
+        db.end_session(conn, session_id, session_end)
 
 
 def summary_text(session_start, session_end, events):

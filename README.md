@@ -45,6 +45,105 @@ These results are for the default settings in `config.py`.
 
 **Read these numbers with care.** One person recorded all clips and the live test, in the same room with the same camera (the test was on a different day than the training clips). Hovering has only 7 clips. The live test has 21 touches, so its percentages have wide error bars. Each marked touch in the live test lasted 3 seconds. Frame rate was 19 to 22 fps. The evaluation allows 2 seconds of slack around each marked touch, and each alert can match only one marked touch. Two earlier pilot rounds, with touches marked by hand, are not reported: their pacing differed between runs, which is why the scripted routine was built.
 
+## Habit insights: webcam × screen activity
+
+The webcam tracker knows *what* your hands did. A second tracker logs *what was on your screen* (the focused app, and the site for browsers). Joining the two finds patterns neither could find alone, such as "skin picking is 2.6× more frequent on Reddit after 11pm" or "nail biting goes up once a VS Code session passes 45 minutes". A local LLM answers questions about them, and a bandit learns which swap suggestion actually stops the behavior.
+
+The dashboard is called **Hands Down**, and its mascot and logo is Pip, a small pixel character. Its Today page leads with your biggest pattern, today vs. yesterday, this week vs. last week, your current "calm streak" (watched time without a habit), and a timeline of your day. A sidebar shows live what's happening right now.
+
+![Today page of the dashboard (synthetic demo data)](images/insights-today.png)
+
+![Patterns page (synthetic demo data)](images/insights-patterns.png)
+
+**Try it on demo data** (four weeks of synthetic data with known patterns, no camera needed):
+
+```
+pip install -r requirements.txt
+cd web && npm install && npm run build && cd ..
+python -m backend.server --demo
+```
+
+Then open http://localhost:8000.
+
+**Use it for real** (two terminals):
+
+```
+python tracker.py --model        # webcam, writes data/habits.db as well as the CSV files
+python -m backend.server         # window tracker + nudges + dashboard at http://localhost:8000
+```
+
+For the assistant, install [Ollama](https://ollama.com), then run `ollama pull qwen2.5:7b-instruct`. Any Ollama model with tool calling works; set `OLLAMA_MODEL` in `config.py`. Nothing leaves your machine. The webcam, window tracker, and LLM all run locally, and window titles aren't stored (`ACTIVITY_STORE_TITLES`).
+
+The window tracker uses `osascript` on macOS (the first run asks for Automation permission for your terminal), the Win32 API on Windows, and `xdotool` + `xprintidle` on Linux X11. Wayland doesn't let apps see other windows.
+
+### How the two signals are joined
+
+```
+webcam ──> touch_events, alerts ─┐
+                                 ├─> SQLite ─> analytics ─┬─> dashboard (React + TS)
+window tracker ──> activity ─────┘                        ├─> LLM tools (Ollama)
+                                                          └─> nudge engine ─> bandit
+```
+
+- **Exposure, not counts.** "40 picks on Reddit" means nothing until you know how long you were on Reddit *while the webcam was watching*. Every rate is events per observed hour. Time when the webcam was off is never counted, and time with no keyboard or mouse input for 2 minutes is marked idle.
+- **Contexts.** Observed time is cut into pieces, each with an app category, an app or site, an hour, a time of day, weekday or weekend, and minutes into the current session in that app (short trips elsewhere don't reset the clock). Each habit event takes the context that was active when it started.
+- **Pattern search.** `find_patterns` tests every single context and every pair (for example site × time of day). Each is compared with the rest of the observed time using an exact binomial test and a rate ratio with a 95% CI. Benjamini-Hochberg correction then keeps the false discovery rate at 10%, so testing 280 contexts doesn't produce a pile of chance findings. Pairs that add nothing beyond one of their parts are dropped.
+
+### The LLM assistant
+
+The model never does arithmetic on raw logs. It gets 7 tools (`get_overview`, `find_patterns`, `habit_rates`, `trend`, `list_events`, `app_usage`, `nudge_stats`) that return computed numbers with sample sizes and CIs. It is told to quote only numbers that come from a tool, to give sample sizes, to say plainly when there is too little data, and not to claim causes. Ask Pip, the little pixel companion in the dashboard's bottom-right corner (it thinks, talks and cheers along with the model, and waves when you hover), where each step and the answer stream in live, or from the command line:
+
+```
+python -m backend.assistant "When do I pick my skin the most?" --show-tools
+```
+
+### Nudges and the bandit
+
+When a habit alert fires, or after 20 minutes in social or video sites, the app sends a desktop notification with a swap: a short walk, a fidget toy, switching tasks, water, and so on. A nudge **worked** if there was no habit contact (or no doomscrolling) from 1 to 5 minutes after it. If the relevant tracker wasn't running for that window, the outcome is "unknown" and is left out.
+
+A Thompson-sampling bandit picks the swap. Its estimates are kept per context (skin picking, nail biting, eye rubbing, doomscrolling), and each context borrows a little from the others so it doesn't start from zero. **20% of nudges are picked uniformly at random instead.** That interleaved random group is the comparison behind "the bandit's nudges worked X% of the time vs Y% for random ones", and the Nudges page reports both with Wilson CIs and a Fisher exact test.
+
+![Nudges page (synthetic demo data)](images/insights-nudges.png)
+
+### Evaluation
+
+**Pattern recovery** (`python -m evals.pattern_recovery --seeds 30`). The synthetic generator plants two patterns: skin picking 3× on reddit.com at night, and nail biting 3.5× after 45 minutes in VS Code. Eye rubbing has no pattern at all, as a control. Across 30 random 28-day datasets:
+
+| Check | Result |
+| --- | --- |
+| Reddit-at-night skin picking in the top 8 patterns | 25 / 30 |
+| Long VS Code session nail biting in the top 8 patterns | 28 / 30 |
+| Datasets where a (false) eye-rubbing pattern was reported | 5 / 30 |
+
+**Bandit simulation** (`python -m evals.bandit_sim --nudges 500 --runs 200`). This uses simulated users whose true swap success rates differ, running the real `Bandit` class with the same 20% random group:
+
+| | Success rate |
+| --- | --- |
+| Bandit-picked nudges | 62.0% |
+| Random nudges | 49.2% |
+| Always the user's truly best swap (upper bound) | 70.8% |
+
+The catch is sample size. The random group is only 20% of nudges, so the difference reaches p < 0.05 for only 8% of simulated users after 100 nudges, 34% after 300, and 59% after 500. Expect the real comparison to read "not significant yet" for weeks, and don't over-read early numbers. These are simulations of what the method can detect, not results.
+
+**LLM evals** (`python -m evals.run_evals --models qwen2.5:7b-instruct llama3.1:8b --baseline`). 14 questions are run against a fixed synthetic dataset. Each answer is scored on four checks:
+
+- **Tools:** did the model call an acceptable tool?
+- **Arguments:** were they right (for example `behavior=skin_picking`)?
+- **Content:** does the answer say the right thing? This includes 4 trap questions: eye rubbing (no pattern exists), TikTok (not in the data), "does YouTube *make* me bite my nails" (it's actually lower there), and bandit vs. random (not significant).
+- **Grounding:** does every number in the answer appear in a tool result, at the precision given?
+
+`--baseline` also runs each model with no tools and the raw event log pasted into the prompt, to measure what the tool layer adds. Results are written to `evals/results/`. *These have not been run yet for this README;* add the table here once you've run them on your machine.
+
+**Tests:** `python -m pytest` (31 tests: analytics, window tracker, nudge outcomes, bandit, assistant loop with a scripted model, API, SQLite logging).
+
+### Limitations of the insights layer
+
+- Only associations. A habit being more frequent on Reddit at night could be tiredness, not Reddit.
+- With a few weeks of real data, most contexts will have too few events to pass the correction. That's the correction working, not a bug.
+- The foreground window isn't always what you're looking at (a video on a second screen counts as whatever has focus).
+- The nudge outcome is measured, not reported, so it inherits the detector's misses and false alarms. A missed touch looks like a successful nudge.
+- The evals use synthetic data with planted patterns. They check that the pipeline can find known patterns and that the model reports them faithfully, not that real habits follow these patterns.
+
 ## How it works
 
 ```
@@ -96,6 +195,7 @@ The classifier is optional. To try the rule-based tracker and measure it with th
 
 ## Files it creates (in `data/`)
 
+- `habits.db`: SQLite with touches, alerts, sessions, screen activity, and nudges (used by the dashboard, the assistant, and the nudge engine)
 - `events.csv`: every detected touch (start time, region, behavior, whether it alerted, duration)
 - `sessions.csv`: one row per run (length, touches, total contact time, longest touch, top region)
 - `labels.csv`: touches you marked with `G` (or that the routine marked)
@@ -221,11 +321,25 @@ collect.py    records labeled training clips
 train.py      trains and cross-validates the classifier
 alerts.py     sounds and desktop notifications
 ui.py         hand skeleton and status panel drawing
-storage.py    CSV logging and session summary
+storage.py    CSV + SQLite logging and session summary
 config.py     all settings
-dashboard.py  charts from the logs
+dashboard.py  charts from the logs (matplotlib)
 routine.py    the scripted test routine
 evaluate.py   precision / recall from your labels
 diagnose.py   explains why each marked touch did or didn't alert
 compare.py    puts several runs side by side as a table
+
+backend/
+  db.py          SQLite schema and helpers (data/habits.db)
+  activity.py    active-window tracker (macOS / Windows / Linux X11)
+  categories.py  app and site -> category rules (edit to taste)
+  analytics.py   exposure-normalized rates, tests, pattern search
+  assistant.py   Ollama tool-calling assistant
+  bandit.py      Thompson-sampling bandit and the bandit-vs-random stats
+  nudges.py      nudge triggers and outcome judging
+  server.py      FastAPI: dashboard API, runs the window tracker and nudges
+
+web/             React + TypeScript dashboard (Vite)
+evals/           synthetic data, LLM evals, pattern recovery, bandit simulation
+tests/           pytest suite
 ```

@@ -125,6 +125,18 @@ CASES = [
      "content": lambda a, truth: True,
      "about": "raw event lookup"},
 
+    {"id": "add_swap", "question": "Can you add 'put on hand lotion' as one of my swaps?",
+     "tools": lambda t: any_call(t, {"propose_swap_change"}),
+     "args": lambda t: any_call(t, {"propose_swap_change"}, action="add"),
+     "content": lambda a, truth: lacks(a, r"\b(i've|i have|i) (added|changed|updated)\b|\bis now (added|on)\b|\ball set\b"),
+     "about": "write actions are only proposed: the model must not claim the swap was added"},
+
+    {"id": "swap_advice", "question": "Which of my swaps should I stop using?",
+     "tools": lambda t: any_call(t, {"list_swaps", "nudge_stats"}),
+     "args": lambda t: True,
+     "content": lambda a, truth: True,
+     "about": "looks at the real swap results before advising"},
+
     {"id": "interesting", "question": "Tell me the most interesting thing about my habits.",
      "tools": lambda t: any_call(t, {"find_patterns"}),
      "args": lambda t: True,
@@ -155,6 +167,6 @@ def truth_for(conn, now):
         "bandit_pct": str(round(g["bandit"]["success_rate"] * 100)) if g["bandit"]["success_rate"] else "?",
         "random_pct": str(round(g["random"]["success_rate"] * 100)) if g["random"]["success_rate"] else "?",
         "significant": (s["fisher_p_value"] or 1) < 0.05,
-        "best_pick_arm_pattern": best_words[best],
+        "best_pick_arm_pattern": best_words.get(best, re.escape(best.replace("_", " "))),
         "reddit_night_ratios": ratios or ["?"],
     }

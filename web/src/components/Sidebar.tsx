@@ -34,6 +34,7 @@ export function Sidebar({ page, setPage, status, lastHabit }: {
           </button>
         ))}
       </nav>
+      {/* status sits right under the menu */}
       {status && <RightNow status={status} lastHabit={lastHabit} />}
     </aside>
   );

@@ -32,7 +32,8 @@ export function LineChart(props: {
   const max = scale.max;
   const x = (i: number) => left + (n <= 1 ? 0 : (i / (n - 1)) * (width - left - right));
   const y = (v: number) => top + (1 - v / max) * (height - top - bottom);
-  const labelEvery = Math.max(1, Math.ceil(n / 6));
+  // date labels need about 56px each; show fewer when the chart is narrow so they never overlap
+  const labelEvery = Math.max(1, Math.ceil(n / 6), Math.ceil((n * 56) / Math.max(width - left - right, 1)));
 
   if (!n) return <p className="empty">No data yet.</p>;
   return (

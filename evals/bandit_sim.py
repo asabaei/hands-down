@@ -2,7 +2,7 @@
 #
 #   python -m evals.bandit_sim --nudges 300 --runs 200
 #
-# Each simulated user has a true chance that each swap stops the behavior (TRUE_ARM_SUCCESS in
+# Each simulated user has a true chance that each swap stops the behavior (true_success() in
 # synthetic.py, plus random per-user noise so the best swap differs from user to user). Every
 # run uses the real Bandit class with the same 20% random group as the app, and reports:
 #   - success rate of the bandit's nudges vs the random group's nudges in that run
@@ -16,12 +16,12 @@ import random
 
 import config
 from backend import bandit
-from evals.synthetic import TRUE_ARM_SUCCESS
+from evals.synthetic import true_success
 
 
 def simulate(rng, n_nudges, noise):
-    truth = {t: {a: min(0.95, max(0.05, p + rng.gauss(0, noise))) for a, p in arms.items()}
-             for t, arms in TRUE_ARM_SUCCESS.items()}
+    truth = {t: {a: min(0.95, max(0.05, true_success(t, a) + rng.gauss(0, noise))) for a in arms}
+             for t, arms in config.NUDGE_ARMS_BY_TRIGGER.items()}
     policy = bandit.Bandit(seed=rng.randrange(1 << 30))
     contexts = [("habit", "habit:skin_picking"), ("habit", "habit:nail_biting"),
                 ("habit", "habit:eye_rubbing"), ("doomscroll", "doomscroll")]

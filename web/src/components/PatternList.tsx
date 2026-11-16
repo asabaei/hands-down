@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Patterns } from "../api";
-import { BEHAVIOR_NAMES, describeContext } from "../labels";
+import { BEHAVIOR_NAMES, confidence, describeContext, patternStats, plainCount } from "../labels";
+import { Tip } from "./Tip";
 
 // The deterministic pattern search (no LLM involved): contexts where a habit is
 // significantly more or less frequent than the rest of the observed time.
@@ -21,8 +22,8 @@ export function PatternList({ data }: { data: Patterns }) {
                 <strong>{describeContext(p.context)}</strong>
               </div>
               <div className="muted">
-                {p.events} events where {p.expected_events} were expected, in {p.observed_hours} observed h ·
-                95% CI {p.ci95?.join("–")}× · q {p.q_value < 0.001 ? "< 0.001" : "= " + p.q_value}
+                {plainCount(p.events, p.expected_events)} ·{" "}
+                <Tip tip={patternStats(p)} className={"conf " + confidence(p.q_value).level}>{confidence(p.q_value).label}</Tip>
               </div>
             </div>
           </li>
@@ -34,7 +35,7 @@ export function PatternList({ data }: { data: Patterns }) {
         </button>
       )}
       <p className="note">
-        {data.tested} contexts tested, false discovery rate 10%. Associations, not causes.
+        Patterns are things that happen together, not proof that one causes the other.
       </p>
     </>
   );

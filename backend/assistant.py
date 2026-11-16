@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 
 import config
-from backend import analytics, bandit, db
+from backend import analytics, bandit, db, swaps
 
 BEHAVIOR_ENUM = ["any", "nail_biting", "skin_picking", "eye_rubbing"]
 
@@ -71,6 +71,23 @@ TOOLS = [
             "group_by": {"type": "string", "enum": ["where", "category", "hour", "daypart"]},
             "days": {"type": "integer"}}}}},
     {"type": "function", "function": {
+        "name": "list_swaps",
+        "description": "The user's current swaps (the suggestions nudges make): their wording, whether they are on, "
+                       "when they are suggested, how often each has worked, and data-based advice about which to pause. "
+                       "Use for 'what are my swaps', 'which swaps should I change', and before proposing a change.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "propose_swap_change",
+        "description": "Proposes a change to the user's swaps. This does NOT change anything: the user sees a card and "
+                       "confirms it with a button. Use when the user asks to add, remove, pause, turn back on, reword, "
+                       "or change when a swap is suggested.",
+        "parameters": {"type": "object", "required": ["action"], "properties": {
+            "action": {"type": "string", "enum": ["add", "remove", "pause", "resume", "reword", "change_when"]},
+            "swap": {"type": "string", "description": "the existing swap, in the user's words (not needed for add)"},
+            "text": {"type": "string", "description": "for add: the new swap, as a short instruction; for reword: the new wording"},
+            "when": {"type": "string", "enum": ["habit", "doomscroll", "both"],
+                     "description": "habit = after a habit alert, doomscroll = after scrolling a long time"}}}}},
+    {"type": "function", "function": {
         "name": "nudge_stats",
         "description": "How well the swap nudges work: success rate of nudges picked by the bandit vs picked at "
                        "random (with 95% CIs and a Fisher exact test), and which swaps work best per context.",
@@ -92,6 +109,13 @@ so plainly instead of stretching the data.
 6. If the user asks about an app, site, or behavior that isn't in the data, say it isn't in the data.
 7. Be brief: a short answer with the 1-3 most useful findings, then one practical suggestion if it fits.
 8. Behavior names: nail_biting = nail biting, skin_picking = skin picking, eye_rubbing = eye rubbing.
+9. Swaps are the suggestions a nudge makes. To change them, call propose_swap_change. It only proposes: the user \
+confirms with a button under your message, so say something like "Tap Yes below and I'll add it", never that it is \
+already done. If the user doesn't say when a new swap should be suggested, use habit.
+10. When suggesting which swaps to change, use list_swaps and only recommend changes its advice or numbers support.
+11. Talk in plain, friendly words. Don't use jargon like "rate ratio", "CI", "p-value", "q-value", "bandit" or
+"Thompson sampling" unless the user asks for the details; say "about 3 times as often", "a strong pattern",
+"Pip's picks vs random guesses" instead. If the user asks for the exact numbers or how it works, give them.
 """
 
 
@@ -191,6 +215,10 @@ class ToolRunner:
                                      min(int(args.get("limit", 20)), 50))
             if name == "app_usage":
                 return a.app_usage(args.get("group_by", "where"), args.get("days"))
+            if name == "list_swaps":
+                return swaps.listing(self.conn)
+            if name == "propose_swap_change":
+                return swaps.propose(self.conn, args.get("action"), args.get("swap"), args.get("text"), args.get("when"))
             if name == "nudge_stats":
                 s = bandit.stats(self.conn)
                 s.pop("series", None)
@@ -245,6 +273,8 @@ def step_label(name, args):
         "list_events": "Looking up recent events",
         "app_usage": "Checking your app and site usage",
         "nudge_stats": "Checking how the nudges are doing",
+        "list_swaps": "Looking at your swaps",
+        "propose_swap_change": "Getting a swap change ready for you",
     }.get(name, "Running " + str(name))
 
 
@@ -252,6 +282,28 @@ BEHAVIOR_WORDS = {"any": "all habits", "nail_biting": "nail biting", "skin_picki
                   "eye_rubbing": "eye rubbing"}
 GROUP_WORDS = {"category": "app category", "where": "app or site", "hour": "hour", "daypart": "time of day",
                "daytype": "weekday vs weekend", "streak": "session length"}
+
+
+def proposal_sentence(p):
+    # what Pip says when it proposes a swap change; it only ever asks, never claims it's done
+    q = "\u201c" + p.get("text", "") + "\u201d"
+    return {
+        "add": "Ooh, good idea! Tap Yes below and I'll add " + q + " to your swaps.",
+        "pause": "Got it. Tap Yes below and I'll stop suggesting " + q + ". You can switch it back on any time.",
+        "resume": "Tap Yes below and I'll start suggesting " + q + " again.",
+        "reword": "Tap Yes below and I'll change the wording to " + q + ".",
+        "change_when": "Tap Yes below and I'll update when " + q + " gets suggested.",
+    }.get(p.get("action"), "Tap Yes below to confirm the change.")
+
+
+def swap_note(r):
+    # what Pip says when a swap change couldn't be proposed (so there is no Yes button to tap)
+    if r.get("note") and r.get("swap"):
+        return "Good news: \u201c" + r["swap"]["text"] + "\u201d is already one of your swaps!"
+    if r.get("your_swaps"):
+        return ("Hmm, I couldn't find that swap. Your swaps are: " + "; ".join(r["your_swaps"])
+                + ". Which one did you mean?")
+    return "Hmm, I couldn't set that up. You can change your swaps on the Nudges page too."
 
 
 class Assistant:
@@ -316,6 +368,17 @@ class Assistant:
                 trace.append({"name": name, "arguments": args, "result": result})
                 messages.append({"role": "tool", "tool_name": name, "content": compact(result)})
                 yield {"type": "step_done", "name": name, "result": result}
+            # A swap change was proposed: answer with a fixed sentence instead of asking the model.
+            # The change only happens after the user confirms, and a model might claim it's already done.
+            swap_results = [c["result"] for c in trace[-len(calls):]
+                            if c["name"] == "propose_swap_change" and isinstance(c["result"], dict)]
+            if swap_results:
+                answer = " ".join(proposal_sentence(r.get("proposal")) if r.get("proposal") else swap_note(r)
+                                  for r in swap_results)
+                for word in answer.split(" "):
+                    yield {"type": "token", "text": word + " "}
+                yield {"type": "done", "answer": answer, "tool_calls": trace, "seconds": round(time.time() - started, 2)}
+                return
             yield {"type": "status", "text": "Reading the results"}
 
     def ask(self, question, history=None):

@@ -5,11 +5,10 @@ import { Tooltip } from "./Tooltip";
 import { axis, fmtNum, useMeasure } from "./useMeasure";
 
 // 24 columns, habit events per observed hour at each hour of the day
-export function HourColumns({ rows }: { rows: RateRow[] }) {
+export function HourColumns({ rows, height = 200 }: { rows: RateRow[]; height?: number }) {
   const [ref, width] = useMeasure<HTMLDivElement>();
   const [hover, setHover] = useState<{ h: number; x: number; y: number } | null>(null);
   const byHour = new Map(rows.map((r) => [Number(r.context.split("=")[1]), r]));
-  const height = 180;
   const left = 32;
   const bottom = 22;
   const plotH = height - bottom - 8;

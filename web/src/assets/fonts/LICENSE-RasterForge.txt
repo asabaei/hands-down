@@ -1,0 +1,6 @@
+Raster Forge by GGBotNet (https://ggbot.net)
+
+License: Creative Commons Zero v1.0 Universal (public domain)
+https://creativecommons.org/publicdomain/zero/1.0/
+
+The license is stated in the font file's own metadata (name table, IDs 13 and 14).

@@ -107,6 +107,41 @@ export interface NudgeStats {
   definition: string;
 }
 
+export interface Swap {
+  key: string;
+  text: string;
+  habit: boolean;
+  doomscroll: boolean;
+  active: boolean;
+  added_by: string;
+  worked: number;
+  tried: number;
+  rate: number | null;
+}
+
+export interface SwapAdvice {
+  key: string;
+  action: "pause";
+  text: string;
+  worked: number;
+  tried: number;
+  best_text: string;
+  message: string;
+}
+
+export interface SwapList {
+  swaps: Swap[];
+  advice: SwapAdvice[];
+}
+
+export interface SwapProposal {
+  action: "add" | "pause" | "resume" | "reword" | "change_when";
+  key?: string;
+  text: string;
+  habit?: boolean;
+  doomscroll?: boolean;
+}
+
 export interface ToolCall {
   name: string;
   arguments: Record<string, unknown>;
@@ -134,6 +169,12 @@ async function get<T>(path: string): Promise<T> {
   return r.json();
 }
 
+async function send<T>(method: string, path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? path + ": " + r.status);
+  return r.json();
+}
+
 const days = (d: number | null) => (d ? "days=" + d : "");
 
 export const api = {
@@ -148,6 +189,11 @@ export const api = {
     get<{ rows: TrendRow[] }>(`/api/trend?behavior=${behavior}&period=day&days=${d ?? 3650}`),
   timeline: (date: string) => get<Timeline>("/api/timeline?date=" + date),
   nudges: () => get<NudgeStats>("/api/nudges"),
+  swaps: () => get<SwapList>("/api/swaps"),
+  addSwap: (body: { text: string; habit: boolean; doomscroll: boolean }) => send<SwapList>("POST", "/api/swaps", body),
+  updateSwap: (key: string, body: Partial<Pick<Swap, "text" | "habit" | "doomscroll" | "active">>) =>
+    send<SwapList>("PATCH", "/api/swaps/" + key, body),
+  applyProposal: (p: SwapProposal) => send<SwapList>("POST", "/api/swaps/apply", p),
   // streams the assistant's progress: one JSON event per line, handed to onEvent as it arrives
   chatStream: async (question: string, history: { role: string; content: string }[],
                      onEvent: (e: ChatEvent) => void): Promise<void> => {

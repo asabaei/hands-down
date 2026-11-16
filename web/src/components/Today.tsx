@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Patterns, Progress, Status, Timeline } from "../api";
+import { NudgeStats, Patterns, Progress, Status, Timeline } from "../api";
 import { api } from "../api";
 import { useData } from "../hooks";
-import { BEHAVIOR_NAMES, contextPhrase, isoDate, minutesText, pct } from "../labels";
+import { BEHAVIOR_NAMES, confidence, contextPhrase, isoDate, minutesText, patternStats, pct, plainCount } from "../labels";
+import { Tip } from "./Tip";
 import { Card } from "./Card";
 import { ArrowRight } from "./Icons";
 import { roundedTop } from "./RateBars";
@@ -31,8 +32,7 @@ export function TodayPage({ status, progress, onAsk, onPatterns, tick }: {
         <p className="warn-box">No habit events yet. Run <code>python tracker.py --model</code>, or try <code>python -m backend.server --demo</code>.</p>
       )}
       <Headline data={patterns.data} onAsk={onAsk} onPatterns={onPatterns} />
-      {progress && <ProgressTiles p={progress} nudgeRate={nudges.data?.groups.bandit.success_rate ?? null}
-                                  randomRate={nudges.data?.groups.random.success_rate ?? null} />}
+      {progress && <ProgressTiles p={progress} nudges={nudges.data ?? null} />}
       {progress && <DayCard key={isoDate(now)} date={isoDate(now)} tick={tick} />}
     </>
   );
@@ -60,8 +60,8 @@ function Headline({ data, onAsk, onPatterns }: { data: Patterns | null; onAsk: (
         {top.direction === "higher" ? "more" : "less"} frequent {phrase}.
       </p>
       <p className="headline-meta">
-        {top.events} events where {top.expected_events} were expected · {top.observed_hours} h watched · 95% CI{" "}
-        {top.ci95?.join("–")}× · an association, not a cause
+        <Tip tip={patternStats(top)} className={"conf " + confidence(top.q_value).level}>{confidence(top.q_value).label}</Tip>{" "}
+        {plainCount(top.events, top.expected_events)}. A pattern, not proof of cause.
       </p>
       <div className="headline-actions">
         <button className="primary" onClick={() => onAsk("Tell me more about my " + (BEHAVIOR_NAMES[top.behavior] ?? "habits").toLowerCase() + " " + phrase + ".")}>
@@ -86,7 +86,12 @@ function Delta({ change, unit }: { change: number | null; unit: string }) {
   );
 }
 
-function ProgressTiles({ p, nudgeRate, randomRate }: { p: Progress; nudgeRate: number | null; randomRate: number | null }) {
+function ProgressTiles({ p, nudges }: { p: Progress; nudges: NudgeStats | null }) {
+  // the same "your nudges helped" number as the Nudges page: all nudges, whoever picked the swap
+  const g = nudges?.groups;
+  const total = g ? g.bandit.nudges + g.random.nudges : 0;
+  const nudgeRate = g && total ? (g.bandit.successes + g.random.successes) / total : null;
+  const randomRate = g?.random.success_rate ?? null;
   const dayChange = p.yesterday.events ? p.today.events / p.yesterday.events - 1 : null;
   return (
     <div className="tiles four">
@@ -107,9 +112,16 @@ function ProgressTiles({ p, nudgeRate, randomRate }: { p: Progress; nudgeRate: n
         <span className="muted">habit-free watched time · best this week {minutesText(p.best_calm_minutes_this_week)}</span>
       </div>
       <div className="tile">
-        <div className="tile-label">Nudges that worked</div>
+        <div className="tile-label">Nudges that helped</div>
         <div className="tile-value">{pct(nudgeRate)}</div>
-        <span className="muted">{randomRate != null ? "vs " + pct(randomRate) + " for random swaps" : "picked by the bandit"}</span>
+        <span className="muted">
+          of the time{" "}
+          {randomRate != null && (
+            <Tip tip={`${g!.bandit.successes + g!.random.successes} of ${total} nudges helped. Swaps Pip picked helped ${pct(g!.bandit.success_rate)} of the time, random swaps ${pct(randomRate)}.`}>
+              {""}
+            </Tip>
+          )}
+        </span>
       </div>
     </div>
   );

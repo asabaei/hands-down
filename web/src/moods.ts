@@ -37,12 +37,12 @@ export const REPLIES: Record<string, { acts: PipState[]; lines: string[] }> = {
   ]},
   good: { acts: ["dance", "hop"], lines: [
     "Yay, that makes me so happy! Let's keep the good vibes rolling.",
-    "Love that for you! Want to see what's been going right?",
+    "YAYAYAYAYAYAY! Love that for you!",
     "A good day! I'm celebrating with you over here.",
   ]},
   great: { acts: ["dance", "hop"], lines: [
     "Amazing! I'm officially celebrating. Let's ride this energy.",
-    "You're glowing and I'm jumping for joy! Let's see what's been working for you.",
+    "You're glowing and I'm jumping for joy!",
     "Great days deserve a little party. Look at you go!",
   ]},
 };

@@ -121,41 +121,50 @@ export function PipIntro({ onAsk, showIdeas, active, onPip }: {
   );
 }
 
-const GENTLE: [string, string[]][] = [
-  ["Something kind", ["What's been going well lately?", "When am I usually calmest?", "Which swap helps me the most?"]],
-];
+// just a few suggestions at first; the full list is one tap away under "More ideas"
+const FEW: Record<MoodGroup, string[]> = {
+  low: ["What's been going well lately?", "When am I usually calmest?"],
+  mid: ["Am I doing better this week than last week?", "Which swap works best for me?"],
+  high: ["Am I doing better this week than last week?", "Which swap works best for me?"],
+};
 const ALL: [string, string[]][] = [
   ["Patterns", ["When do I pick my skin the most?", "Does nail biting go up during long coding sessions?"]],
   ["Progress", ["Am I doing better this week than last week?", "What happened yesterday?"]],
   ["Screen time", ["Which apps am I using when my habits happen?"]],
-  ["Nudges", ["Which swap works best for me?", "Do the bandit's nudges work better than random ones?"]],
+  ["Nudges", ["Which swap works best for me?", "Which of my swaps should I change?", "Do the bandit's nudges work better than random ones?"]],
 ];
 
 function Ideas({ group, onAsk }: { group: MoodGroup; onAsk: (q: string) => void }) {
-  // on low days, lead with kinder questions; everything else is one tap away
-  const [all, setAll] = useState(group !== "low");
+  const [more, setMore] = useState(false);
   const { data } = useData<Patterns>(() => api.patterns("any", 28), []);
   const top = data?.patterns.find((p) => p.direction === "higher");
+  // on okay and good days, the first suggestion comes from your own strongest pattern
   const personal = top && group !== "low"
     ? "Why is my " + (top.behavior === "any" ? "habit" : (BEHAVIOR_NAMES[top.behavior] ?? "habit").toLowerCase()) +
       " rate higher " + contextPhrase(top.context) + "?"
     : null;
-  const groups = group === "low" ? (all ? [...GENTLE, ...ALL] : GENTLE) : ALL;
+  const few = FEW[group];
   return (
     <div className="pip-ideas">
-      {personal && (
-        <div className="idea-group">
-          <div className="idea-topic">From your data</div>
+      <div className="idea-group">
+        {personal && (
           <button className="chip personal" onClick={() => onAsk(personal)}><span aria-hidden="true">✦</span> {personal}</button>
-        </div>
-      )}
-      {groups.map(([topic, qs]) => (
-        <div key={topic} className="idea-group">
-          <div className="idea-topic">{topic}</div>
-          {qs.map((q) => <button key={q} className="chip" onClick={() => onAsk(q)}>{q}</button>)}
-        </div>
-      ))}
-      {!all && <button className="chip more" onClick={() => setAll(true)}>Show me everything</button>}
+        )}
+        {few.map((q) => <button key={q} className="chip" onClick={() => onAsk(q)}>{q}</button>)}
+      </div>
+      <button className="more-ideas" onClick={() => setMore(!more)} aria-expanded={more}>
+        {more ? "Fewer ideas" : "More ideas"}
+      </button>
+      {more && ALL.map(([topic, qs]) => {
+        const rest = qs.filter((q) => !few.includes(q));
+        return rest.length ? (
+          <div key={topic} className="idea-group">
+            <div className="idea-topic">{topic}</div>
+            {rest.map((q) => <button key={q} className="chip" onClick={() => onAsk(q)}>{q}</button>)}
+          </div>
+        ) : null;
+      })}
     </div>
   );
 }
+

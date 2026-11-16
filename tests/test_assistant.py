@@ -38,7 +38,8 @@ def test_every_tool_runs(demo_db):
     runner = assistant.ToolRunner(db.connect(demo_db), now=END)
     for tool in assistant.TOOLS:
         name = tool["function"]["name"]
-        args = {"group_by": ["where"]} if name == "habit_rates" else {}
+        args = {"habit_rates": {"group_by": ["where"]},
+                "propose_swap_change": {"action": "add", "text": "Put on hand lotion"}}.get(name, {})
         result = runner.run(name, args)
         assert "error" not in result, name
 

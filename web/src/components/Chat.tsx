@@ -1,7 +1,8 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { api, ChatEvent, ToolCall } from "../api";
+import { api, ChatEvent, SwapProposal, ToolCall } from "../api";
 import { PipState } from "../pip";
 import { PipIntro } from "./PipIntro";
+import { SWAPS_CHANGED } from "./SwapsCard";
 
 
 interface Step {
@@ -91,8 +92,24 @@ export function Chat({ llm, initial, onActivity, inputRef, active = true, onPip 
     });
   }
 
+  // a swap change waiting for an answer: typing "yes" or "no" answers it like the buttons do
+  const pending = useRef<{ yes: () => void; no: () => void } | null>(null);
+
   async function ask(question: string) {
     if (!question.trim() || busy) return;
+    const reply = question.trim().toLowerCase().replace(/[.!]+$/, "");
+    if (pending.current && YES.test(reply)) {
+      setTurns((t) => [...t, { role: "user", content: question }]);
+      setInput("");
+      pending.current.yes();
+      return;
+    }
+    if (pending.current && NO.test(reply)) {
+      setTurns((t) => [...t, { role: "user", content: question }]);
+      setInput("");
+      pending.current.no();
+      return;
+    }
     const history = turns.filter((t) => !t.error).map((t) => ({ role: t.role, content: t.content }));
     setTurns((t) => [...t, { role: "user", content: question },
                      { role: "assistant", content: "", status: "Starting", steps: [], live: true }]);
@@ -152,6 +169,11 @@ export function Chat({ llm, initial, onActivity, inputRef, active = true, onPip 
                 {t.live && <span className="cursor" aria-hidden="true" />}
               </div>
             )}
+            {!t.live && t.toolCalls?.map((c, j) => {
+              const r = c.result as { proposal?: SwapProposal; summary?: string } | null;
+              return r?.proposal ? <ProposalCard key={"p" + j} proposal={r.proposal} summary={r.summary ?? ""} pending={pending}
+                                                 onDone={() => onActivity?.("done")} /> : null;
+            })}
             {!t.live && t.toolCalls && t.toolCalls.length > 0 && (
               <details className="trace">
                 <summary>
@@ -184,4 +206,52 @@ function statusText(t: Turn) {
   if (t.status === "Reading the results") return "Writing the answer";
   if (t.status === "Thinking" || t.status === "Starting") return "Thinking about which data to look at";
   return t.status;
+}
+
+// A change Pip proposed. Nothing happens until you press "Yes".
+const YES = /^(y|yes|yeah|yep|yup|sure|ok|okay|do it|go ahead|please|yes please|sounds good|confirm)$/;
+const NO = /^(n|no|nope|nah|never mind|nevermind|cancel|don't|dont|no thanks)$/;
+
+function ProposalCard({ proposal, summary, onDone, pending }: {
+  proposal: SwapProposal;
+  summary: string;
+  onDone: () => void;
+  pending: React.MutableRefObject<{ yes: () => void; no: () => void } | null>;
+}) {
+  const [state, setState] = useState<"ask" | "saving" | "done" | "skipped" | "error">("ask");
+  const yes = async () => {
+    setState("saving");
+    try {
+      await api.applyProposal(proposal);
+      setState("done");
+      window.dispatchEvent(new Event(SWAPS_CHANGED));
+      onDone();   // Pip cheers
+    } catch {
+      setState("error");
+    }
+  };
+  useEffect(() => {
+    if (state !== "ask") return;
+    const handlers = { yes, no: () => setState("skipped") };
+    pending.current = handlers;
+    return () => { if (pending.current === handlers) pending.current = null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
+
+  return (
+    <div className={"proposal is-" + state} role="group" aria-label="Swap change">
+      <div className="eyebrow">Change your swaps?</div>
+      <p>{summary}</p>
+      {state === "ask" || state === "saving" ? (
+        <div className="proposal-actions">
+          <button className="primary small" onClick={yes} disabled={state === "saving"}>Yes, do it</button>
+          <button className="ghost" onClick={() => setState("skipped")}>Never mind</button>
+        </div>
+      ) : (
+        <p className="proposal-result">
+          {state === "done" ? "✓ Done. You can see it on the Nudges page." : state === "skipped" ? "Okay, nothing changed." : "That didn't work. Try again from the Nudges page."}
+        </p>
+      )}
+    </div>
+  );
 }

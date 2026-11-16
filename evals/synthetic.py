@@ -34,6 +34,13 @@ TRUE_ARM_SUCCESS = {
                    "stretch": 0.35, "close_tab": 0.45},
 }
 
+DEFAULT_SUCCESS = 0.45   # for swaps you add in config.py that aren't listed above
+
+
+def true_success(trigger, arm):
+    return TRUE_ARM_SUCCESS.get(trigger, {}).get(arm, DEFAULT_SUCCESS)
+
+
 APPS = {
     "Code": ("coding", None), "Terminal": ("coding", None), "Slack": ("chat", None),
     "Discord": ("chat", None), "Spotify": ("music", None),
@@ -159,7 +166,7 @@ def simulate_nudges(conn, rng, alerts_ts, doom_ts):
     events += [(t, "doomscroll", "doomscroll", site) for t, site in doom_ts]
     for ts, trigger, context, detail in sorted(events):
         arm, pol = policy.choose(trigger, context)
-        success = rng.random() < TRUE_ARM_SUCCESS[trigger][arm]
+        success = rng.random() < true_success(trigger, arm)
         status = "success" if success else "failure"
         conn.execute("INSERT INTO nudges (ts, trigger, context, detail, arm, policy, status, resolved_at) "
                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

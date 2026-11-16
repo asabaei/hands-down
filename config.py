@@ -136,16 +136,16 @@ NUDGE_GRACE_SECONDS = 60      # time to act on the nudge before it is judged
 NUDGE_OUTCOME_MINUTES = 5     # success = no habit contact / doomscrolling from grace until here
 NUDGE_RANDOM_FRACTION = 0.2   # share of nudges picked uniformly at random (the comparison group)
 NUDGE_ARMS = {
-    "walk": "Take a 2-minute walk",
-    "fidget": "Grab a fidget toy or stress ball",
+    #"walk": "Take a 2-minute walk",
+    #"fidget": "Grab a fidget toy or stress ball",
     "switch_task": "Switch to a different task for a few minutes",
     "water": "Get a glass of water",
     "breathe": "Do 5 slow breaths with your hands on the desk",
-    "stretch": "Stand up and stretch your arms over your head",
-    "hands_busy": "Hold something in both hands (pen, mug, putty)",
+    "stretch": "Stretch your arms over your head and fix your posture",
+    #"hands_busy": "Hold something in both hands (pen, mug, putty)",
     "close_tab": "Close this tab and write down what you came here for",
 }
 NUDGE_ARMS_BY_TRIGGER = {
-    "habit": ["walk", "fidget", "switch_task", "water", "breathe", "stretch", "hands_busy"],
-    "doomscroll": ["walk", "switch_task", "water", "breathe", "stretch", "close_tab"],
+    "habit": ["switch_task", "water", "breathe", "stretch", "hands_busy"],
+    "doomscroll": ["switch_task", "water", "breathe", "stretch", "close_tab"],
 }

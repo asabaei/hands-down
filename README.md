@@ -101,6 +101,8 @@ python -m backend.assistant "When do I pick my skin the most?" --show-tools
 
 When a habit alert fires, or after 20 minutes in social or video sites, the app sends a desktop notification with a swap: a short walk, a fidget toy, switching tasks, water, and so on. A nudge **worked** if there was no habit contact (or no doomscrolling) from 1 to 5 minutes after it. If the relevant tracker wasn't running for that window, the outcome is "unknown" and is left out.
 
+The swaps are yours to change. On the Nudges page you can switch each one on or off, reword it, choose whether it's suggested after habits, scrolling or both, and add your own. You can also just ask Pip ("add 'put on hand lotion' as a swap"). Pip only proposes the change, and nothing happens until you press Yes. Once a swap has been tried at least 8 times, Pip also points out swaps that work clearly less often for you than your best one and offers to pause them. The defaults in `config.py` are only the starting set; your list is saved in the database.
+
 A Thompson-sampling bandit picks the swap. Its estimates are kept per context (skin picking, nail biting, eye rubbing, doomscrolling), and each context borrows a little from the others so it doesn't start from zero. **20% of nudges are picked uniformly at random instead.** That interleaved random group is the comparison behind "the bandit's nudges worked X% of the time vs Y% for random ones", and the Nudges page reports both with Wilson CIs and a Fisher exact test.
 
 ![Nudges page (synthetic demo data)](images/insights-nudges.png)
@@ -125,7 +127,7 @@ A Thompson-sampling bandit picks the swap. Its estimates are kept per context (s
 
 The catch is sample size. The random group is only 20% of nudges, so the difference reaches p < 0.05 for only 8% of simulated users after 100 nudges, 34% after 300, and 59% after 500. Expect the real comparison to read "not significant yet" for weeks, and don't over-read early numbers. These are simulations of what the method can detect, not results.
 
-**LLM evals** (`python -m evals.run_evals --models qwen2.5:7b-instruct llama3.1:8b --baseline`). 14 questions are run against a fixed synthetic dataset. Each answer is scored on four checks:
+**LLM evals** (`python -m evals.run_evals --models qwen2.5:7b-instruct llama3.1:8b --baseline`). 16 questions are run against a fixed synthetic dataset. Each answer is scored on four checks:
 
 - **Tools:** did the model call an acceptable tool?
 - **Arguments:** were they right (for example `behavior=skin_picking`)?
@@ -134,7 +136,7 @@ The catch is sample size. The random group is only 20% of nudges, so the differe
 
 `--baseline` also runs each model with no tools and the raw event log pasted into the prompt, to measure what the tool layer adds. Results are written to `evals/results/`. *These have not been run yet for this README;* add the table here once you've run them on your machine.
 
-**Tests:** `python -m pytest` (31 tests: analytics, window tracker, nudge outcomes, bandit, assistant loop with a scripted model, API, SQLite logging).
+**Tests:** `python -m pytest` (40 tests: analytics, window tracker, nudge outcomes, bandit, assistant loop with a scripted model, API, SQLite logging).
 
 ### Limitations of the insights layer
 

@@ -18,9 +18,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
-from backend import activity, analytics, assistant, bandit, db, nudges
+from backend import activity, analytics, assistant, bandit, db, nudges, swaps
 
 WEB_DIST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "dist")
+
+
+class SwapRequest(BaseModel):
+    text: str | None = None
+    habit: bool | None = None
+    doomscroll: bool | None = None
+    active: bool | None = None
 
 
 class ChatRequest(BaseModel):
@@ -71,7 +78,7 @@ def create_app(db_path=None, activity_tracker=None, nudge_engine=None, client=No
         out["demo"] = demo
         last = c.execute("SELECT ts, arm, status, trigger FROM nudges WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
                          (t,)).fetchone()
-        out["last_nudge"] = dict(last, text=config.NUDGE_ARMS.get(last["arm"], last["arm"])) if last else None
+        out["last_nudge"] = dict(last, text=swaps.text_for(c, last["arm"])) if last else None
         return out
 
     @app.get("/api/range")
@@ -119,8 +126,41 @@ def create_app(db_path=None, activity_tracker=None, nudge_engine=None, client=No
         s = bandit.stats(c)
         s["recent"] = db.rows(c, "SELECT ts, trigger, context, detail, arm, policy, status FROM nudges "
                                  "ORDER BY ts DESC LIMIT ?", (limit,))
-        s["arm_text"] = config.NUDGE_ARMS
+        s["arm_text"] = swaps.texts(c)
         return s
+
+    # ---- your swaps ----
+    @app.get("/api/swaps")
+    def list_swaps():
+        return swaps.listing(conn())
+
+    @app.post("/api/swaps")
+    def add_swap(req: SwapRequest):
+        c = conn()
+        try:
+            key = swaps.add(c, req.text or "", req.habit if req.habit is not None else True, bool(req.doomscroll))
+        except ValueError as error:
+            raise HTTPException(400, str(error))
+        return {"key": key, **swaps.listing(c)}
+
+    @app.patch("/api/swaps/{key}")
+    def change_swap(key: str, req: SwapRequest):
+        c = conn()
+        try:
+            swaps.update(c, key, req.text, req.habit, req.doomscroll, req.active)
+        except KeyError:
+            raise HTTPException(404, "no swap called " + key)
+        return swaps.listing(c)
+
+    @app.post("/api/swaps/apply")
+    def apply_proposal(proposal: dict):
+        # a change Pip proposed in the chat, applied only after you press "Yes"
+        c = conn()
+        try:
+            key = swaps.apply(c, proposal)
+        except (KeyError, ValueError) as error:
+            raise HTTPException(400, str(error))
+        return {"key": key, **swaps.listing(c)}
 
     @app.post("/api/chat")
     def chat(req: ChatRequest):

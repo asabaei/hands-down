@@ -14,6 +14,7 @@ import alerts
 import config
 from backend import bandit as bandit_mod
 from backend import db
+from backend import swaps
 
 DOOM_ALLOWED_SECONDS = 30
 COVERAGE_NEEDED = 0.9
@@ -84,11 +85,14 @@ class NudgeEngine:
         return r or 0
 
     def send(self, conn, policy, trigger, context, detail, now):
-        arm, chosen_by = policy.choose(trigger, context)
+        arms = swaps.arms_for(conn, trigger)
+        if not arms:
+            return     # every swap for this trigger is switched off
+        arm, chosen_by = policy.choose(trigger, context, arms)
         conn.execute("INSERT INTO nudges (ts, trigger, context, detail, arm, policy, status) "
                      "VALUES (?, ?, ?, ?, ?, ?, 'pending')", (now, trigger, context, detail, arm, chosen_by))
         conn.commit()
-        text = config.NUDGE_ARMS[arm]
+        text = swaps.text_for(conn, arm)
         title = "Swap idea" if trigger == "habit" else "You've been scrolling a while"
         self.notify(title, text)
         self.latest = {"ts": now, "trigger": trigger, "context": context, "arm": arm, "text": text,

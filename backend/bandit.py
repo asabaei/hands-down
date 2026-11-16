@@ -56,20 +56,22 @@ class Bandit:
         mean = (os_ + 1) / (n_other + 2)
         return 1 + strength * mean + s, 1 + strength * (1 - mean) + f
 
-    def choose(self, trigger, context):
-        arms = config.NUDGE_ARMS_BY_TRIGGER[trigger]
+    def choose(self, trigger, context, arms=None):
+        # arms: the swaps you have switched on for this trigger (defaults to config.py)
+        arms = arms or config.NUDGE_ARMS_BY_TRIGGER[trigger]
         if self.rng.random() < self.random_fraction:
             return self.rng.choice(arms), "random"
         draws = {arm: self.rng.betavariate(*self.posterior(context, arm)) for arm in arms}
         return max(draws, key=draws.get), "bandit"
 
-    def summary(self, context):
-        arms = config.NUDGE_ARMS_BY_TRIGGER[trigger_of(context)]
+    def summary(self, context, arms=None, texts=None):
+        arms = arms or config.NUDGE_ARMS_BY_TRIGGER[trigger_of(context)]
+        texts = texts or config.NUDGE_ARMS
         out = []
         for arm in arms:
             a, b = self.posterior(context, arm)
             s, f = self.counts[(context, arm)]
-            out.append({"arm": arm, "text": config.NUDGE_ARMS[arm], "successes": s, "failures": f,
+            out.append({"arm": arm, "text": texts.get(arm, arm.replace("_", " ")), "successes": s, "failures": f,
                         "posterior_mean": round(a / (a + b), 3)})
         return sorted(out, key=lambda r: -r["posterior_mean"])
 
@@ -101,6 +103,7 @@ def fisher_exact(a, b, c, d):
 
 
 def stats(conn):
+    from backend import swaps   # your current swaps (imported here to avoid a circular import)
     rows = db.rows(conn, "SELECT ts, trigger, context, arm, policy, status FROM nudges ORDER BY ts")
     resolved = [r for r in rows if r["status"] in ("success", "failure")]
     groups = {}
@@ -135,7 +138,8 @@ def stats(conn):
         "groups": groups,
         "fisher_p_value": p,
         "series": series[-400:],
-        "arms_by_context": {c: bandit.summary(c) for c in contexts},
+        "arms_by_context": {c: bandit.summary(c, swaps.arms_for(conn, trigger_of(c)) or None, swaps.texts(conn))
+                            for c in contexts},
         "definition": ("success = no habit contact (or no doomscrolling) from " + str(config.NUDGE_GRACE_SECONDS)
                        + " s to " + str(config.NUDGE_OUTCOME_MINUTES) + " min after the nudge"),
     }

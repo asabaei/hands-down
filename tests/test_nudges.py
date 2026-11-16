@@ -109,3 +109,14 @@ def test_fisher_and_wilson():
     assert abs(bandit.fisher_exact(1, 9, 11, 3) - 0.002759) < 1e-4    # textbook tea-tasting style table
     lo, hi = bandit.wilson(50, 100)
     assert abs(lo - 0.404) < 0.01 and abs(hi - 0.596) < 0.01
+
+
+def test_new_swaps_in_config_work_in_the_demo_data(tmp_path, monkeypatch):
+    # adding a swap in config.py must not break the demo data or the simulation
+    from evals import bandit_sim, synthetic
+    monkeypatch.setitem(config.NUDGE_ARMS, "lotion", "Put on some hand lotion")
+    monkeypatch.setitem(config.NUDGE_ARMS_BY_TRIGGER, "habit", config.NUDGE_ARMS_BY_TRIGGER["habit"] + ["lotion"])
+    path = synthetic.generate(str(tmp_path / "demo.db"), days=7, seed=3)
+    conn = db.connect(path)
+    assert conn.execute("SELECT COUNT(*) FROM nudges WHERE arm = 'lotion'").fetchone()[0] > 0
+    bandit_sim.simulate(random.Random(0), 50, 0.1)

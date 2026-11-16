@@ -10,10 +10,11 @@ export function Card(props: {
   legend?: ReactNode;
   children: ReactNode;
   wide?: boolean;
+  className?: string;
 }) {
   const [showTable, setShowTable] = useState(false);
   return (
-    <section className={"card" + (props.wide ? " wide" : "")}>
+    <section className={"card" + (props.wide ? " wide" : "") + (props.className ? " " + props.className : "")}>
       <header className="card-head">
         <div>
           <h2>{props.title}</h2>

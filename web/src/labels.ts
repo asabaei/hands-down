@@ -94,3 +94,25 @@ export function ago(ts: number, now: number): string {
   if (m < 60 * 24) return Math.round(m / 60) + " h ago";
   return Math.round(m / 60 / 24) + " d ago";
 }
+
+// plain-language confidence for a pattern (the exact stats go in a hover tooltip)
+export function confidence(q: number): { label: string; level: "strong" | "likely" | "watch" } {
+  if (q < 0.01) return { label: "Strong pattern", level: "strong" };
+  if (q < 0.05) return { label: "Likely pattern", level: "likely" };
+  return { label: "Worth watching", level: "watch" };
+}
+
+// "23 times, when about 6 would be normal"
+export function plainCount(events: number, expected: number): string {
+  const exp = expected >= 10 ? Math.round(expected) : Math.round(expected * 2) / 2;
+  return `${events} time${events === 1 ? "" : "s"}, when about ${exp} would be normal`;
+}
+
+// the exact stats behind a pattern, for the tooltip
+export function patternStats(p: { events: number; expected_events: number; observed_hours: number;
+  rate_ratio_vs_rest: number | null; ci95: [number, number] | null; q_value?: number; p_value: number }): string {
+  const q = p.q_value ?? p.p_value;
+  return `${p.events} events where ${p.expected_events} were expected, in ${p.observed_hours} watched hours. ` +
+    `Rate ratio ${p.rate_ratio_vs_rest}× (95% CI ${p.ci95?.join("–")}×), ` +
+    `q ${q < 0.001 ? "< 0.001" : "= " + q} after correcting for multiple comparisons. An association, not proof of cause.`;
+}

@@ -18,6 +18,7 @@ export function Companion({ status, ask, open, setOpen }: {
   const [expanded, setExpanded] = useState(false);
   const [activity, setActivity] = useState<PipState>("idle");   // from the chat
   const [moment, setMoment] = useState<PipState | null>(null);  // short reactions (wave, cheer, shy)
+  const [intro, setIntro] = useState<PipState | null>(null);    // talking and reacting during the mood check-in
   const [greet, setGreet] = useState(() => !localStorage.getItem(GREETED_KEY));
   const momentTimer = useRef<number | undefined>(undefined);
   const input = useRef<HTMLInputElement>(null);
@@ -59,8 +60,9 @@ export function Companion({ status, ask, open, setOpen }: {
 
   const trackersOff = !!status && !status.demo && !status.trackers.webcam.running && !status.trackers.activity.running;
   const busy = activity !== "idle";
-  const state: PipState = busy ? activity : moment ?? (trackersOff ? "sleepy" : "idle");
+  const state: PipState = busy ? activity : intro ?? moment ?? (trackersOff ? "sleepy" : "idle");
   const caption = activity === "thinking" ? "looking at your data…" : activity === "talking" ? "typing…"
+    : intro === "talking" ? "typing…"
     : status?.llm.ok ? "local · " + status.llm.model.split(":")[0] : "assistant offline";
 
   return (
@@ -69,7 +71,6 @@ export function Companion({ status, ask, open, setOpen }: {
       <section className={"companion-panel" + (expanded ? " expanded" : "")} role="dialog" aria-label="Pip, your habit assistant"
                hidden={!open}>
         <header className="companion-head">
-          <span className="companion-avatar"><Pip state={state} size={36} /></span>
           <div className="companion-title">
             <strong>Pip</strong>
             <span className="muted">{caption}</span>
@@ -87,7 +88,7 @@ export function Companion({ status, ask, open, setOpen }: {
           </button>
         </header>
         <div className="companion-body">
-          <Chat llm={status?.llm} initial={ask} onActivity={onActivity} inputRef={input} />
+          <Chat llm={status?.llm} initial={ask} onActivity={onActivity} inputRef={input} active={open} onPip={setIntro} />
         </div>
       </section>
 

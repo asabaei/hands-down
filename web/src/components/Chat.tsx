@@ -1,12 +1,8 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, ChatEvent, ToolCall } from "../api";
+import { PipState } from "../pip";
+import { PipIntro } from "./PipIntro";
 
-const SUGGESTIONS = [
-  "When do I pick my skin the most?",
-  "Does nail biting go up during long coding sessions?",
-  "Is there a pattern to my eye rubbing?",
-  "Do the bandit's nudges work better than random ones?",
-];
 
 interface Step {
   label: string;
@@ -26,11 +22,13 @@ interface Turn {
 
 export type ChatActivity = "idle" | "thinking" | "talking" | "done";
 
-export function Chat({ llm, initial, onActivity, inputRef }: {
+export function Chat({ llm, initial, onActivity, inputRef, active = true, onPip }: {
   llm?: { ok: boolean; model: string; model_pulled: boolean };
   initial?: { question: string; id: number } | null;   // asked automatically, e.g. from the headline card
   onActivity?: (a: ChatActivity) => void;              // lets the companion change its mood
   inputRef?: React.RefObject<HTMLInputElement | null>;
+  active?: boolean;                                    // the chat is visible (Pip's intro waits for this)
+  onPip?: (s: PipState | null) => void;                // Pip's intro drives the companion directly
 }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
@@ -129,15 +127,8 @@ export function Chat({ llm, initial, onActivity, inputRef }: {
         </p>
       )}
       <div className="turns" aria-live="polite">
-        {!turns.length && (
-          <div className="suggestions">
-            {SUGGESTIONS.map((s) => (
-              <button key={s} className="chip" onClick={() => ask(s)}>
-                {s}
-              </button>
-            ))}
-          </div>
-        )}
+        {/* Pip's introduction stays at the top of the chat; the question ideas hide once you've asked something */}
+        <PipIntro onAsk={ask} showIdeas={!turns.length} active={active} onPip={(st) => onPip?.(st)} />
         {turns.map((t, i) => (
           <div key={i} className={"turn " + t.role + (t.error ? " error" : "")}>
             {t.role === "assistant" && !!t.steps?.length && (

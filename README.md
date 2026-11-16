@@ -91,7 +91,7 @@ window tracker ──> activity ─────┘                        ├─
 
 ### The LLM assistant
 
-The model never does arithmetic on raw logs. It gets 7 tools (`get_overview`, `find_patterns`, `habit_rates`, `trend`, `list_events`, `app_usage`, `nudge_stats`) that return computed numbers with sample sizes and CIs. It is told to quote only numbers that come from a tool, to give sample sizes, to say plainly when there is too little data, and not to claim causes. Ask Pip, the little pixel companion in the dashboard's bottom-right corner (it thinks, talks and cheers along with the model, and waves when you hover), where each step and the answer stream in live, or from the command line:
+The model never does arithmetic on raw logs. It gets 7 tools (`get_overview`, `find_patterns`, `habit_rates`, `trend`, `list_events`, `app_usage`, `nudge_stats`) that return computed numbers with sample sizes and CIs. It is told to quote only numbers that come from a tool, to give sample sizes, to say plainly when there is too little data, and not to claim causes. Ask Pip, the little pixel companion in the dashboard's bottom-right corner. Pip introduces itself, asks how you're doing (a hug on hard days, a heart on okay days, a dance or hops on good ones), and then thinks, talks and cheers along with the model while each step and the answer stream in live. Or ask from the command line:
 
 ```
 python -m backend.assistant "When do I pick my skin the most?" --show-tools

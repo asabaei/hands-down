@@ -7,3 +7,11 @@ model.joblib
 *.pyc
 .DS_Store
 *.joblib
+evals/results/
+web/node_modules/
+web/dist/
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/
+web/*.tsbuildinfo

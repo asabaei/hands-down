@@ -1,0 +1,501 @@
+# The local LLM assistant. It answers questions about your habits by calling tools that run
+# the analytics in backend/analytics.py, then explains the results.
+#
+# Rules it is given (and that the evals check):
+#   - every number in an answer must come from a tool result, never from its own arithmetic
+#   - always give the sample size, and say when there is too little data
+#   - patterns are associations, not causes
+#
+# It talks to Ollama's /api/chat with the "tools" field, so any Ollama model with tool calling
+# works (qwen2.5, llama3.1, mistral-nemo, ...). Nothing leaves your machine.
+
+import json
+import re
+import time
+import urllib.error
+import urllib.request
+
+import config
+from backend import analytics, bandit, categories, db, swaps
+
+BEHAVIOR_ENUM = ["any", "nail_biting", "skin_picking", "eye_rubbing"]
+
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "get_overview",
+        "description": "Totals for a time range: hours the webcam was watching, habit events by behavior, "
+                       "time per app category, and the most used apps and sites. Use for 'how much / how many' questions.",
+        "parameters": {"type": "object", "properties": {
+            "days": {"type": "integer", "description": "look back this many days; omit for all data"}}}}},
+    {"type": "function", "function": {
+        "name": "find_patterns",
+        "description": "Searches every context (app, site, category, time of day, weekday/weekend, minutes into an "
+                       "app session, and pairs of these) for habit rates that are significantly higher or lower "
+                       "than the rest of the time, corrected for multiple testing. Use for 'when / where do I ...', "
+                       "'what triggers ...', and open questions like 'what stands out' or 'anything interesting'.",
+        "parameters": {"type": "object", "properties": {
+            "behavior": {"type": "string", "enum": BEHAVIOR_ENUM},
+            "days": {"type": "integer", "description": "look back this many days; omit for all data"}}}}},
+    {"type": "function", "function": {
+        "name": "habit_rates",
+        "description": "Habit events per observed hour, split by one or two dimensions, each compared with the "
+                       "rest of the time (rate ratio with 95% CI and p-value). Use to check a specific idea, "
+                       "e.g. group_by=['where','daypart'] for 'Reddit at night'.",
+        "parameters": {"type": "object", "required": ["group_by"], "properties": {
+            "group_by": {"type": "array", "items": {"type": "string", "enum": analytics.DIMENSIONS},
+                         "description": "category (social, video, coding...), where (site or app), hour (0-23), "
+                                        "daypart (night = 11pm-5am, so use it for 'at night' or 'after 11pm'), daytype "
+                                        "(weekday/weekend), streak (minutes into the app session)"},
+            "behavior": {"type": "string", "enum": BEHAVIOR_ENUM},
+            "days": {"type": "integer"}}}}},
+    {"type": "function", "function": {
+        "name": "trend",
+        "description": "Habit events and events per observed hour for each day or week, plus a summary that "
+                       "compares the first half of the range with the second, to see if things are getting better or worse.",
+        "parameters": {"type": "object", "properties": {
+            "behavior": {"type": "string", "enum": BEHAVIOR_ENUM},
+            "period": {"type": "string", "enum": ["day", "week"]},
+            "days": {"type": "integer"}}}}},
+    {"type": "function", "function": {
+        "name": "list_events",
+        "description": "Individual habit events with time, region, and what app/site was open. Use for "
+                       "'what happened today / yesterday' questions.",
+        "parameters": {"type": "object", "properties": {
+            "behavior": {"type": "string", "enum": BEHAVIOR_ENUM},
+            "days": {"type": "integer"},
+            "where": {"type": "string", "description": "only events in this app, site, or category"},
+            "limit": {"type": "integer"}}}}},
+    {"type": "function", "function": {
+        "name": "app_usage",
+        "description": "Time spent in apps and sites (from the active-window tracker), grouped by app/site, "
+                       "category, hour, or daypart.",
+        "parameters": {"type": "object", "properties": {
+            "group_by": {"type": "string", "enum": ["where", "category", "hour", "daypart"]},
+            "days": {"type": "integer"}}}}},
+    {"type": "function", "function": {
+        "name": "list_swaps",
+        "description": "The user's current swaps (the suggestions nudges make): their wording, whether they are on, "
+                       "when they are suggested, how often each has worked overall (for one habit, use nudge_stats), and data-based advice about which to pause. "
+                       "Use for 'what are my swaps', 'which swaps should I change', and before proposing a change.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "propose_swap_change",
+        "description": "Proposes a change to the user's swaps. This does NOT change anything: the user sees a card and "
+                       "confirms it with a button. Use when the user asks to add, remove, pause, turn back on, reword, "
+                       "or change when a swap is suggested.",
+        "parameters": {"type": "object", "required": ["action"], "properties": {
+            "action": {"type": "string", "enum": ["add", "remove", "pause", "resume", "reword", "change_when"]},
+            "swap": {"type": "string", "description": "the existing swap, in the user's words (not needed for add)"},
+            "text": {"type": "string", "description": "for add: the new swap, as a short instruction; for reword: the new wording"},
+            "when": {"type": "string", "enum": ["habit", "doomscroll", "both"],
+                     "description": "habit = after a habit alert, doomscroll = after scrolling a long time"}}}}},
+    {"type": "function", "function": {
+        "name": "nudge_stats",
+        "description": "How well the swap nudges work: success rate of nudges picked by the bandit vs picked at "
+                       "random (with 95% CIs and a Fisher exact test), and which swaps work best per context.",
+        "parameters": {"type": "object", "properties": {}}}},
+]
+
+SYSTEM_PROMPT = """You are a habit-insight assistant inside a hand-to-face habit tracker. The user's data has two \
+streams: webcam-detected hand-to-face habits (nail_biting, skin_picking, eye_rubbing) and which app or website was \
+in the foreground. You answer questions about patterns across both.
+
+Rules:
+1. Always call tools to get data before answering. Never guess or invent numbers.
+2. Every number you state must appear in a tool result. Do not do your own arithmetic (no averages, \
+differences, or percentages you worked out yourself; give the tool's numbers, like "12 of 36 times"); if you need a comparison, \
+call habit_rates or find_patterns, which compute rate ratios for you.
+3. Rates are per hour the webcam was watching ("observed hours"). Say this when you give a rate.
+4. Leave out "days" (use all the data) unless the user asks about a time window like today, yesterday, \
+or the last two weeks. Less data hides real patterns.
+5. Mention the number of events behind a claim. If a tool reports too little data or no significant patterns, say \
+so plainly instead of stretching the data.
+6. A difference only counts as a real pattern when the tool marks it "significant": true (or it comes from \
+find_patterns). Otherwise say it could be chance. Patterns are associations, not causes.
+7. Before giving any number for an app or site, check its name appears in a tool result. If it doesn't, say \
+there's no data for it and give no number for it.
+8. Be brief: a short answer with the 1-3 most useful findings, then one practical suggestion if it fits.
+9. Behavior names: nail_biting = nail biting, skin_picking = skin picking, eye_rubbing = eye rubbing.
+10. Swaps are the suggestions a nudge makes. Only call propose_swap_change when the user asks to change a swap; \
+the app then shows the user a confirm button. Never mention a button or offer to add something yourself. If the \
+user doesn't say when a new swap should be suggested, use habit.
+11. When suggesting which swaps to change, use list_swaps and only recommend changes its advice or numbers support. \
+For which swap works best for one habit, use nudge_stats (it has results per habit).
+12. Talk in plain, friendly words. Don't use jargon like "rate ratio", "CI", "p-value", "q-value", "bandit" or
+"Thompson sampling" unless the user asks for the details; say "about 3 times as often", "a strong pattern",
+"Pip's picks vs random guesses" instead. If the user asks for the exact numbers or how it works, give them.
+"""
+
+
+class OllamaClient:
+    def __init__(self, url=None, model=None, timeout=180):
+        self.url = (url or config.OLLAMA_URL).rstrip("/")
+        self.model = model or config.OLLAMA_MODEL
+        self.timeout = timeout
+
+    def request(self, messages, tools, stream):
+        body = json.dumps({"model": self.model, "messages": messages, "tools": tools, "stream": stream,
+                           "keep_alive": config.OLLAMA_KEEP_ALIVE,
+                           "options": {"temperature": 0, "num_ctx": config.OLLAMA_NUM_CTX}}).encode()
+        req = urllib.request.Request(self.url + "/api/chat", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            return urllib.request.urlopen(req, timeout=self.timeout)
+        except urllib.error.URLError as error:
+            raise RuntimeError("Can't reach Ollama at " + self.url + ". Is `ollama serve` running and is "
+                               "the model pulled (ollama pull " + self.model + ")? " + str(error))
+
+    def chat(self, messages, tools):
+        with self.request(messages, tools, stream=False) as resp:
+            return json.loads(resp.read())["message"]
+
+    def chat_stream(self, messages, tools):
+        # yields message pieces as the model writes them: {"content": "a few words"} and,
+        # usually in one piece, {"tool_calls": [...]}
+        with self.request(messages, tools, stream=True) as resp:
+            for line in resp:
+                if not line.strip():
+                    continue
+                chunk = json.loads(line)
+                if chunk.get("error"):
+                    raise RuntimeError("Ollama: " + chunk["error"])
+                if chunk.get("message"):
+                    yield chunk["message"]
+                if chunk.get("done"):
+                    return
+
+    def warm_up(self):
+        # loads the model into memory so the first question doesn't wait for it
+        body = json.dumps({"model": self.model, "keep_alive": config.OLLAMA_KEEP_ALIVE}).encode()
+        req = urllib.request.Request(self.url + "/api/generate", data=body,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout):
+                pass
+        except (urllib.error.URLError, OSError):
+            pass    # Ollama not running yet; the Ask tab will say so
+
+    def available(self):
+        try:
+            with urllib.request.urlopen(self.url + "/api/tags", timeout=3) as resp:
+                names = [m["name"] for m in json.loads(resp.read()).get("models", [])]
+            return {"ok": True, "model": self.model, "model_pulled": any(n.startswith(self.model) for n in names)}
+        except (urllib.error.URLError, OSError):
+            return {"ok": False, "model": self.model, "model_pulled": False}
+
+
+def clean_args(args):
+    # small models sometimes send numbers as strings, a single string for a list, or empty values
+    out = {}
+    for k, v in (args or {}).items():
+        if v in (None, "", [], "null"):
+            continue
+        if k in ("days", "limit") and isinstance(v, str):
+            try:
+                v = int(float(v))
+            except ValueError:
+                continue
+        if k == "group_by" and isinstance(v, str):
+            v = [x.strip() for x in v.split(",")] if "," in v else v
+        out[k] = v
+    return out
+
+
+TIME_WORDS = re.compile(r"\b(today|tonight|yesterday|this (morning|afternoon|evening)|days?|weeks?|months?|"
+                        r"weekend|recent(ly)?|lately|since|last|past)\b", re.I)
+# analysis tools that need lots of data: small models like to add "days": 7 on their own, which hides patterns
+WHOLE_HISTORY_TOOLS = {"get_overview", "find_patterns", "habit_rates", "app_usage"}
+
+
+def known_places():
+    # every website the categorizer knows, by the name people use ("tiktok", "youtube", "reddit")
+    names = {}
+    for sites in categories.SITES.values():
+        for site in sites:
+            names[site.split(".")[0] if not site.startswith(("web.", "docs.", "mail.", "news.")) else site] = site
+    for key, words in categories.TITLE_KEYWORDS.items():
+        for w in words:
+            if w.strip().isalpha() and len(w.strip()) >= 4:
+                names[w.strip()] = key
+    # app names are left out: many are everyday words ("pages", "music", "teams", "terminal")
+    return {n: v for n, v in names.items() if len(n) >= 4 and n not in ("office",)}
+
+
+KNOWN_PLACES = None
+
+
+def places_not_in_data(conn, question):
+    # e.g. "How much do I bite my nails on TikTok?" when TikTok never shows up: the model is told up front,
+    # because a small model will otherwise pin some other app's numbers on it
+    global KNOWN_PLACES
+    if KNOWN_PLACES is None:
+        KNOWN_PLACES = known_places()
+    q = question.lower()
+    missing = []
+    for name, target in KNOWN_PLACES.items():
+        if not re.search(r"\b" + re.escape(name) + r"\b", q):
+            continue
+        like = "%" + target.split(".")[0] + "%"
+        row = conn.execute("SELECT 1 FROM activity WHERE lower(COALESCE(domain, '')) LIKE ? "
+                           "OR lower(COALESCE(app, '')) LIKE ? LIMIT 1", (like, like)).fetchone()
+        if row is None:
+            missing.append(name)
+    return missing
+
+
+class ToolRunner:
+    def __init__(self, conn, now=None):
+        self.conn = conn
+        self.analytics = analytics.Analytics(conn, now=now)
+        self.allow_days = True    # set per question by Assistant
+
+    def run(self, name, args):
+        a = self.analytics
+        args = clean_args(args)
+        if name in WHOLE_HISTORY_TOOLS and not self.allow_days:
+            args.pop("days", None)
+        try:
+            if name == "get_overview":
+                return a.overview(args.get("days"))
+            if name == "find_patterns":
+                return a.find_patterns(args.get("behavior", "any"), args.get("days"))
+            if name == "habit_rates":
+                out = a.habit_rates(args.get("group_by", "category"), args.get("behavior", "any"), args.get("days"))
+                for g in out.get("groups", []):
+                    g["significant"] = g["p_value"] < 0.05 and g["events"] >= config.MIN_PATTERN_EVENTS
+                return out
+            if name == "trend":
+                return with_trend_summary(a.trend(args.get("behavior", "any"), args.get("period", "day"),
+                                                  args.get("days", 14)))
+            if name == "list_events":
+                return a.list_events(args.get("behavior", "any"), args.get("days", 1), args.get("where"),
+                                     min(int(args.get("limit", 20)), 50))
+            if name == "app_usage":
+                return a.app_usage(args.get("group_by", "where"), args.get("days"))
+            if name == "list_swaps":
+                return swaps.listing(self.conn)
+            if name == "propose_swap_change":
+                return swaps.propose(self.conn, args.get("action"), args.get("swap"), args.get("text"), args.get("when"))
+            if name == "nudge_stats":
+                s = bandit.stats(self.conn)
+                s.pop("series", None)
+                return s
+            return {"error": "unknown tool " + name}
+        except (TypeError, ValueError) as error:
+            return {"error": "bad arguments: " + str(error)}
+
+
+def with_trend_summary(out):
+    # the model wants "better or worse?" and an average; compute them here so it doesn't do the math itself
+    rows = [r for r in out.get("rows", []) if r.get("observed_hours")]
+    if len(rows) < 2:
+        return out
+    def rate(rs):
+        h = sum(r["observed_hours"] for r in rs)
+        return round(sum(r["events"] for r in rs) / h, 2) if h else None
+    half = len(rows) // 2
+    first, second = rate(rows[:half]), rate(rows[half:])
+    change = (second - first) / first if first else None
+    out["summary"] = {
+        "average_events_per_hour": rate(rows),
+        "first_half_events_per_hour": first, "second_half_events_per_hour": second,
+        "change_percent": round(change * 100) if change is not None else None,
+        "direction": ("about the same" if change is None or abs(change) < 0.15
+                      else "better (fewer habits)" if change < 0 else "worse (more habits)"),
+    }
+    return out
+
+
+# fields the model doesn't need: dropping them makes every prompt shorter and every answer faster
+DROP_FOR_LLM = {"strength", "series", "definition"}
+
+
+def slim(value):
+    if isinstance(value, dict):
+        return {k: slim(v) for k, v in value.items() if k not in DROP_FOR_LLM}
+    if isinstance(value, list):
+        return [slim(v) for v in value]
+    return value
+
+
+def compact(result, limit=3500):
+    # keep tool results small enough for a local model's context
+    result = slim(result)
+    text = json.dumps(result, separators=(",", ":"), default=str)
+    if len(text) <= limit:
+        return text
+    if isinstance(result, dict):
+        for key in ("groups", "events", "rows", "patterns"):
+            if isinstance(result.get(key), list) and len(result[key]) > 8:
+                trimmed = dict(result)
+                trimmed[key] = result[key][:8]
+                trimmed["truncated"] = str(len(result[key]) - 8) + " more rows left out"
+                return compact(trimmed, limit)
+    return text[:limit]
+
+
+def step_label(name, args):
+    # what the chat shows while a tool runs, e.g. "Searching patterns for skin picking"
+    args = clean_args(args)
+    habit = BEHAVIOR_WORDS.get(args.get("behavior", "any"), "your habits")
+    group = args.get("group_by", "category")
+    if isinstance(group, list):
+        group = " and ".join(GROUP_WORDS.get(g, g) for g in group)
+    else:
+        group = GROUP_WORDS.get(group, group)
+    return {
+        "get_overview": "Getting your overview",
+        "find_patterns": "Searching patterns for " + habit,
+        "habit_rates": "Comparing " + habit + " by " + group,
+        "trend": "Checking the trend for " + habit,
+        "list_events": "Looking up recent events",
+        "app_usage": "Checking your app and site usage",
+        "nudge_stats": "Checking how the nudges are doing",
+        "list_swaps": "Looking at your swaps",
+        "propose_swap_change": "Getting a swap change ready for you",
+    }.get(name, "Running " + str(name))
+
+
+BEHAVIOR_WORDS = {"any": "all habits", "nail_biting": "nail biting", "skin_picking": "skin picking",
+                  "eye_rubbing": "eye rubbing"}
+GROUP_WORDS = {"category": "app category", "where": "app or site", "hour": "hour", "daypart": "time of day",
+               "daytype": "weekday vs weekend", "streak": "session length"}
+
+
+BUTTON_TALK = re.compile(r"[^.!?\n]*\b(tap|press|click) (yes|the button)\b[^.!?\n]*[.!?]?", re.I)
+
+
+def drop_button_talk(text):
+    # only a real proposal shows a Yes button; anything else that mentions one is the model making it up
+    return re.sub(r"[ \t]+\n", "\n", BUTTON_TALK.sub("", text)).strip()
+
+
+def proposal_sentence(p):
+    # what Pip says when it proposes a swap change; it only ever asks, never claims it's done
+    q = "\u201c" + p.get("text", "") + "\u201d"
+    return {
+        "add": "Ooh, good idea! Tap Yes below and I'll add " + q + " to your swaps.",
+        "pause": "Got it. Tap Yes below and I'll stop suggesting " + q + ". You can switch it back on any time.",
+        "resume": "Tap Yes below and I'll start suggesting " + q + " again.",
+        "reword": "Tap Yes below and I'll change the wording to " + q + ".",
+        "change_when": "Tap Yes below and I'll update when " + q + " gets suggested.",
+    }.get(p.get("action"), "Tap Yes below to confirm the change.")
+
+
+def swap_note(r):
+    # what Pip says when a swap change couldn't be proposed (so there is no Yes button to tap)
+    if r.get("note") and r.get("swap"):
+        return "Good news: \u201c" + r["swap"]["text"] + "\u201d is already one of your swaps!"
+    if r.get("your_swaps"):
+        return ("Hmm, I couldn't find that swap. Your swaps are: " + "; ".join(r["your_swaps"])
+                + ". Which one did you mean?")
+    return "Hmm, I couldn't set that up. You can change your swaps on the Nudges page too."
+
+
+class Assistant:
+    def __init__(self, conn=None, client=None, now=None):
+        self.conn = conn or db.connect()
+        self.client = client or OllamaClient()
+        self.tools = ToolRunner(self.conn, now=now)
+
+    def model_reply(self, messages, tools):
+        # streams the reply if the client can, otherwise yields it as one piece
+        if hasattr(self.client, "chat_stream"):
+            yield from self.client.chat_stream(messages, tools)
+        else:
+            yield self.client.chat(messages, tools)
+
+    def ask_stream(self, question, history=None):
+        # yields events as they happen:
+        #   {"type": "status", "text"}            what it's doing ("Thinking", "Writing answer")
+        #   {"type": "step", "name", "arguments", "label"}   a tool call is starting
+        #   {"type": "step_done", "name", "result"}          ...and its result
+        #   {"type": "token", "text"}             a piece of the answer
+        #   {"type": "reset"}                     drop the text streamed so far (the model went on to call a tool)
+        #   {"type": "done", "answer", "tool_calls", "seconds"}
+        started = time.time()
+        today = time.strftime("%A %Y-%m-%d %H:%M", time.localtime(self.tools.analytics.now()))
+        system = SYSTEM_PROMPT + "\nNow: " + today
+        missing = places_not_in_data(self.conn, question)
+        if missing:
+            system += ("\nNote: " + ", ".join(missing) + " never appears in the user's data. Say there is no "
+                       "data for it and give no numbers for it.")
+        messages = [{"role": "system", "content": system}]
+        messages += history or []
+        messages.append({"role": "user", "content": question})
+        trace = []
+        self.tools.allow_days = bool(TIME_WORDS.search(question))
+        yield {"type": "status", "text": "Thinking"}
+        for round_number in range(config.LLM_MAX_TOOL_ROUNDS + 1):
+            last_round = round_number == config.LLM_MAX_TOOL_ROUNDS
+            if last_round:   # out of rounds: ask for an answer without tools
+                messages.append({"role": "user", "content": "Answer now using the tool results above."})
+            content, calls = "", []
+            for piece in self.model_reply(messages, [] if last_round else TOOLS):
+                if piece.get("tool_calls"):
+                    calls += piece["tool_calls"]
+                text = piece.get("content") or ""
+                if text:
+                    if not content.strip() and not text.strip():
+                        continue   # skip leading blank lines
+                    content += text
+                    yield {"type": "token", "text": text}
+            messages.append({"role": "assistant", "content": content, "tool_calls": calls})
+            if not calls:
+                yield {"type": "done", "answer": drop_button_talk(content), "tool_calls": trace,
+                       "seconds": round(time.time() - started, 2)}
+                return
+            if content:
+                yield {"type": "reset"}   # text before a tool call was thinking out loud, not the answer
+            for call in calls:
+                fn = call.get("function", {})
+                name, args = fn.get("name"), fn.get("arguments") or {}
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {}
+                yield {"type": "step", "name": name, "arguments": args, "label": step_label(name, args)}
+                result = self.tools.run(name, args)
+                trace.append({"name": name, "arguments": args, "result": result})
+                messages.append({"role": "tool", "tool_name": name, "content": compact(result)})
+                yield {"type": "step_done", "name": name, "result": result}
+            # A swap change was proposed: answer with a fixed sentence instead of asking the model.
+            # The change only happens after the user confirms, and a model might claim it's already done.
+            swap_results = [c["result"] for c in trace[-len(calls):]
+                            if c["name"] == "propose_swap_change" and isinstance(c["result"], dict)]
+            if swap_results:
+                answer = " ".join(proposal_sentence(r.get("proposal")) if r.get("proposal") else swap_note(r)
+                                  for r in swap_results)
+                for word in answer.split(" "):
+                    yield {"type": "token", "text": word + " "}
+                yield {"type": "done", "answer": answer, "tool_calls": trace, "seconds": round(time.time() - started, 2)}
+                return
+            yield {"type": "status", "text": "Reading the results"}
+
+    def ask(self, question, history=None):
+        # the same as ask_stream, but waits for the whole answer:
+        # returns {"answer", "tool_calls": [{"name", "arguments", "result"}], "seconds"}
+        for event in self.ask_stream(question, history):
+            if event["type"] == "done":
+                return {k: event[k] for k in ("answer", "tool_calls", "seconds")}
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Ask the habit assistant a question")
+    parser.add_argument("question", nargs="+")
+    parser.add_argument("--db", default=None)
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--show-tools", action="store_true")
+    args = parser.parse_args()
+    a = Assistant(db.connect(args.db), OllamaClient(model=args.model))
+    out = a.ask(" ".join(args.question))
+    if args.show_tools:
+        for call in out["tool_calls"]:
+            print("->", call["name"], json.dumps(call["arguments"]))
+    print(out["answer"])
+
+
+if __name__ == "__main__":
+    main()

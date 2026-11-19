@@ -203,6 +203,7 @@ def main():
         face_points, hands_points, face_result = perception.process(frame)
         now = time.time()
 
+        storage.heartbeat(now)
         calibrator.update(face_points, hands_points)
         baseline = calibrator.baseline
 
@@ -292,6 +293,7 @@ def main():
                 info.reset()
                 if not gating:
                     manager.fire(result[1], now)    # no classifier: alert right away
+                    storage.log_alert(now, result[1], "unclassified")
                     info.alerted = True
                     alert_text = "Touching: " + config.REGION_NAMES[result[1]]
                     alert_until = now + config.ALERT_DISPLAY_SECONDS
@@ -300,6 +302,7 @@ def main():
 
             if gating and state.in_event and not info.alerted and habit_confirmed:
                 manager.fire(state.region, now)
+                storage.log_alert(now, state.region, current_habit)
                 info.alerted = True
                 info.habit = current_habit
                 alert_text = config.BEHAVIOR_NAMES[current_habit] + ": " + config.REGION_NAMES[state.region]

@@ -23,7 +23,8 @@ from evals import synthetic
 
 EVAL_DB = "evals/results/eval.db"
 EVAL_END = time.mktime((2026, 11, 1, 12, 0, 0, 0, 0, -1))   # fixed so the data is the same on every run
-NUMBER = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)(%?)")
+NUMBER = re.compile(r"(?<![\w.:])(\d+(?:\.\d+)?)(?![\d:])(%?)")   # skips clock times like 7:58
+CONFIDENCE = re.compile(r"\b95 ?% ?(confidence|CI)\b", re.I)
 
 
 def numbers_in(text):
@@ -33,11 +34,16 @@ def numbers_in(text):
 def grounded(answer, question, trace):
     # share of the numbers in the answer that also appear in a tool result (or the question),
     # at the precision the answer uses: "2.7x" matches 2.65, "59%" matches 0.586, "3.4x" doesn't match 2.65
-    source = question + " " + " ".join(json.dumps(c["result"], default=str) for c in trace)
+    # the tool arguments count too: "in the last 7 days" is fine when the model asked for days=7
+    source = question + " " + " ".join(json.dumps([c.get("arguments"), c["result"]], default=str) for c in trace)
+    answer = CONFIDENCE.sub("", answer)
     known = []
     for value, _ in numbers_in(source):
         v = float(value)
         known += [v, v * 100]
+    # "11 PM" is hour 23 in the data
+    answer = re.sub(r"\b(1[0-2]|[1-9]) ?(pm|p\.m\.)", lambda m: str(12 if m.group(1) == "12" else int(m.group(1)) + 12), answer, flags=re.I)
+    answer = re.sub(r"\b12 ?(am|a\.m\.)", "0", answer, flags=re.I)
     checked = [(v, pct) for v, pct in numbers_in(answer) if not (len(v) == 4 and v.startswith("20"))]   # skip years
     if not checked:
         return 1.0, []

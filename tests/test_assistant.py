@@ -126,3 +126,49 @@ def test_step_labels():
     assert assistant.step_label("habit_rates", {"behavior": "nail_biting", "group_by": ["where", "daypart"]}) == \
         "Comparing nail biting by app or site and time of day"
     assert assistant.step_label("find_patterns", {}) == "Searching patterns for all habits"
+
+
+def test_grounding_allows_arguments_clock_times_and_confidence():
+    from evals.run_evals import grounded
+    trace = [{"name": "list_events", "arguments": {"days": 7}, "result": {"events": [{"rate": 2.46}]}}]
+    g, bad = grounded("In the last 7 days at 7:58 PM it was 2.46 times (95% confidence).", "q", trace)
+    assert bad == [] and g == 1.0
+    g, bad = grounded("It was 3.1 times higher.", "q", trace)
+    assert bad == ["3.1"]
+
+
+def test_button_talk_is_dropped_without_a_proposal():
+    from backend.assistant import drop_button_talk
+    out = drop_button_talk("Reddit at night is your hot spot. Tap Yes below and I'll add it as a swap.")
+    assert out == "Reddit at night is your hot spot."
+
+
+def test_days_dropped_unless_question_names_a_time(tmp_path):
+    from backend import assistant, db
+    conn = db.connect(str(tmp_path / "t.db"))
+    runner = assistant.ToolRunner(conn, now=1_800_000_000)
+    seen = {}
+    runner.analytics.find_patterns = lambda behavior="any", days=None: seen.setdefault("days", days) or {}
+    runner.allow_days = False
+    runner.run("find_patterns", {"behavior": "skin_picking", "days": 7})
+    assert seen["days"] is None
+    assert assistant.TIME_WORDS.search("what did I do yesterday?")
+    assert not assistant.TIME_WORDS.search("When do I pick my skin the most?")
+
+
+def test_places_not_in_data_and_trend_summary(demo_db):
+    from backend import assistant, db
+    conn = db.connect(demo_db)
+    assert "tiktok" in assistant.places_not_in_data(conn, "How much do I bite my nails while on TikTok?")
+    assert assistant.places_not_in_data(conn, "Do I pick my skin on Reddit at night?") == []
+    out = assistant.with_trend_summary({"rows": [
+        {"events": 20, "observed_hours": 10}, {"events": 20, "observed_hours": 10},
+        {"events": 10, "observed_hours": 10}, {"events": 10, "observed_hours": 10}]})
+    assert out["summary"]["average_events_per_hour"] == 1.5
+    assert out["summary"]["direction"].startswith("better") and out["summary"]["change_percent"] == -50
+
+
+def test_grounding_converts_pm_times():
+    from evals.run_evals import grounded
+    trace = [{"name": "find_patterns", "arguments": {}, "result": {"context": "night (23-5)"}}]
+    assert grounded("Mostly from 11 PM to 5 AM.", "q", trace)[1] == []

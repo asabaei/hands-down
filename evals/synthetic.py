@@ -176,8 +176,11 @@ def simulate_nudges(conn, rng, alerts_ts, doom_ts):
 
 
 def generate(path, days=28, seed=7, end=None, nudges=True):
-    if os.path.exists(path):
-        os.remove(path)
+    # remove the old database with its WAL side files: a leftover -wal from a stopped run
+    # next to a fresh database makes SQLite fail with "disk I/O error"
+    for f in (path, path + "-wal", path + "-shm"):
+        if os.path.exists(f):
+            os.remove(f)
     rng = random.Random(seed)
     conn = db.connect(path)
     end = end or time.time()

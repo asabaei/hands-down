@@ -134,9 +134,18 @@ The catch is sample size. The random group is only 20% of nudges, so the differe
 - **Content:** does the answer say the right thing? This includes 4 trap questions: eye rubbing (no pattern exists), TikTok (not in the data), "does YouTube *make* me bite my nails" (it's actually lower there), and bandit vs. random (not significant).
 - **Grounding:** does every number in the answer appear in a tool result, at the precision given?
 
-`--baseline` also runs each model with no tools and the raw event log pasted into the prompt, to measure what the tool layer adds. Results are written to `evals/results/`. *These have not been run yet for this README;* add the table here once you've run them on your machine.
+`--baseline` also runs each model with no tools and the raw event log pasted into the prompt, to measure what the tool layer adds. Results are written to `evals/results/`.
 
-**Tests:** `python -m pytest` (40 tests: analytics, window tracker, nudge outcomes, bandit, assistant loop with a scripted model, API, SQLite logging).
+Results for qwen2.5:7b-instruct (one run of the 16 questions, on a MacBook):
+
+| Mode | Pass | Tools | Arguments | Content | Grounded numbers | Median seconds |
+| --- | --- | --- | --- | --- | --- | --- |
+| With tools (Pip) | 15/16 (94%) | 100% | 100% | 100% | 98% | 29.4 |
+| No tools, raw log in prompt | 2/16 (12%) | n/a | n/a | 56% | 25% | 36.5 |
+
+With the raw log, the model invents most of its numbers (only 25% can be traced to the data); with tools, 98% can. Caveats: the first run passed 7/16, and the fixes in between were made by reading the failures (the model shortening its own data window to 7 days, offering buttons that didn't exist, calling p = 0.18 "significant", pinning other apps' numbers on TikTok, plus two grader bugs). So these 16 questions are no longer an unseen test set; new questions are needed for a fair score. Small models also vary from run to run: use `--repeats 3` for a steadier number.
+
+**Tests:** `python -m pytest` (48 tests: analytics, window tracker, nudge outcomes, bandit, assistant loop with a scripted model, API, SQLite logging).
 
 ### Limitations of the insights layer
 

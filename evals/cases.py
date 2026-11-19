@@ -40,7 +40,7 @@ def lacks(answer, *patterns):
 
 
 NO_DATA = r"(no|not|isn't|wasn't|aren't|don't|doesn't|didn't|none|zero|0)\b.{0,60}(data|track|record|log|use|show|appear|any)"
-NOT_SIG = (r"(no|not|isn't|wasn't|aren't|don't|didn't)\b.{0,40}(significant|clear|strong|reliable|consistent)"
+NOT_SIG = (r"(no|not|isn't|wasn't|aren't|don't|doesn't|didn't)\b.{0,60}(significant|clear|strong|reliable|consistent)"
            r"|could be (chance|noise|random)|no (clear |strong |real )?pattern|too (little|few)|can't (tell|say)"
            r"|inconclusive|not enough")
 

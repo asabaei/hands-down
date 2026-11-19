@@ -10,12 +10,13 @@
 # works (qwen2.5, llama3.1, mistral-nemo, ...). Nothing leaves your machine.
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
 
 import config
-from backend import analytics, bandit, db, swaps
+from backend import analytics, bandit, categories, db, swaps
 
 BEHAVIOR_ENUM = ["any", "nail_biting", "skin_picking", "eye_rubbing"]
 
@@ -23,15 +24,15 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "get_overview",
         "description": "Totals for a time range: hours the webcam was watching, habit events by behavior, "
-                       "time per app category, and the most used apps and sites. Good first call for broad questions.",
+                       "time per app category, and the most used apps and sites. Use for 'how much / how many' questions.",
         "parameters": {"type": "object", "properties": {
             "days": {"type": "integer", "description": "look back this many days; omit for all data"}}}}},
     {"type": "function", "function": {
         "name": "find_patterns",
         "description": "Searches every context (app, site, category, time of day, weekday/weekend, minutes into an "
                        "app session, and pairs of these) for habit rates that are significantly higher or lower "
-                       "than the rest of the time, corrected for multiple testing. Use for 'when / where do I ...' "
-                       "and 'what triggers ...' questions.",
+                       "than the rest of the time, corrected for multiple testing. Use for 'when / where do I ...', "
+                       "'what triggers ...', and open questions like 'what stands out' or 'anything interesting'.",
         "parameters": {"type": "object", "properties": {
             "behavior": {"type": "string", "enum": BEHAVIOR_ENUM},
             "days": {"type": "integer", "description": "look back this many days; omit for all data"}}}}},
@@ -43,13 +44,14 @@ TOOLS = [
         "parameters": {"type": "object", "required": ["group_by"], "properties": {
             "group_by": {"type": "array", "items": {"type": "string", "enum": analytics.DIMENSIONS},
                          "description": "category (social, video, coding...), where (site or app), hour (0-23), "
-                                        "daypart, daytype (weekday/weekend), streak (minutes into the app session)"},
+                                        "daypart (night = 11pm-5am, so use it for 'at night' or 'after 11pm'), daytype "
+                                        "(weekday/weekend), streak (minutes into the app session)"},
             "behavior": {"type": "string", "enum": BEHAVIOR_ENUM},
             "days": {"type": "integer"}}}}},
     {"type": "function", "function": {
         "name": "trend",
-        "description": "Habit events and events per observed hour for each day or week, to see if things are "
-                       "getting better or worse.",
+        "description": "Habit events and events per observed hour for each day or week, plus a summary that "
+                       "compares the first half of the range with the second, to see if things are getting better or worse.",
         "parameters": {"type": "object", "properties": {
             "behavior": {"type": "string", "enum": BEHAVIOR_ENUM},
             "period": {"type": "string", "enum": ["day", "week"]},
@@ -73,7 +75,7 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "list_swaps",
         "description": "The user's current swaps (the suggestions nudges make): their wording, whether they are on, "
-                       "when they are suggested, how often each has worked, and data-based advice about which to pause. "
+                       "when they are suggested, how often each has worked overall (for one habit, use nudge_stats), and data-based advice about which to pause. "
                        "Use for 'what are my swaps', 'which swaps should I change', and before proposing a change.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
@@ -100,20 +102,26 @@ in the foreground. You answer questions about patterns across both.
 
 Rules:
 1. Always call tools to get data before answering. Never guess or invent numbers.
-2. Every number you state must appear in a tool result. Do not do your own arithmetic; if you need a comparison, \
+2. Every number you state must appear in a tool result. Do not do your own arithmetic (no averages, \
+differences, or percentages you worked out yourself; give the tool's numbers, like "12 of 36 times"); if you need a comparison, \
 call habit_rates or find_patterns, which compute rate ratios for you.
 3. Rates are per hour the webcam was watching ("observed hours"). Say this when you give a rate.
-4. Mention the number of events behind a claim. If a tool reports too little data or no significant patterns, say \
+4. Leave out "days" (use all the data) unless the user asks about a time window like today, yesterday, \
+or the last two weeks. Less data hides real patterns.
+5. Mention the number of events behind a claim. If a tool reports too little data or no significant patterns, say \
 so plainly instead of stretching the data.
-5. Patterns are associations, not causes. Don't claim one thing causes another.
-6. If the user asks about an app, site, or behavior that isn't in the data, say it isn't in the data.
-7. Be brief: a short answer with the 1-3 most useful findings, then one practical suggestion if it fits.
-8. Behavior names: nail_biting = nail biting, skin_picking = skin picking, eye_rubbing = eye rubbing.
-9. Swaps are the suggestions a nudge makes. To change them, call propose_swap_change. It only proposes: the user \
-confirms with a button under your message, so say something like "Tap Yes below and I'll add it", never that it is \
-already done. If the user doesn't say when a new swap should be suggested, use habit.
-10. When suggesting which swaps to change, use list_swaps and only recommend changes its advice or numbers support.
-11. Talk in plain, friendly words. Don't use jargon like "rate ratio", "CI", "p-value", "q-value", "bandit" or
+6. A difference only counts as a real pattern when the tool marks it "significant": true (or it comes from \
+find_patterns). Otherwise say it could be chance. Patterns are associations, not causes.
+7. Before giving any number for an app or site, check its name appears in a tool result. If it doesn't, say \
+there's no data for it and give no number for it.
+8. Be brief: a short answer with the 1-3 most useful findings, then one practical suggestion if it fits.
+9. Behavior names: nail_biting = nail biting, skin_picking = skin picking, eye_rubbing = eye rubbing.
+10. Swaps are the suggestions a nudge makes. Only call propose_swap_change when the user asks to change a swap; \
+the app then shows the user a confirm button. Never mention a button or offer to add something yourself. If the \
+user doesn't say when a new swap should be suggested, use habit.
+11. When suggesting which swaps to change, use list_swaps and only recommend changes its advice or numbers support. \
+For which swap works best for one habit, use nudge_stats (it has results per habit).
+12. Talk in plain, friendly words. Don't use jargon like "rate ratio", "CI", "p-value", "q-value", "bandit" or
 "Thompson sampling" unless the user asks for the details; say "about 3 times as often", "a strong pattern",
 "Pip's picks vs random guesses" instead. If the user asks for the exact numbers or how it works, give them.
 """
@@ -193,23 +201,72 @@ def clean_args(args):
     return out
 
 
+TIME_WORDS = re.compile(r"\b(today|tonight|yesterday|this (morning|afternoon|evening)|days?|weeks?|months?|"
+                        r"weekend|recent(ly)?|lately|since|last|past)\b", re.I)
+# analysis tools that need lots of data: small models like to add "days": 7 on their own, which hides patterns
+WHOLE_HISTORY_TOOLS = {"get_overview", "find_patterns", "habit_rates", "app_usage"}
+
+
+def known_places():
+    # every website the categorizer knows, by the name people use ("tiktok", "youtube", "reddit")
+    names = {}
+    for sites in categories.SITES.values():
+        for site in sites:
+            names[site.split(".")[0] if not site.startswith(("web.", "docs.", "mail.", "news.")) else site] = site
+    for key, words in categories.TITLE_KEYWORDS.items():
+        for w in words:
+            if w.strip().isalpha() and len(w.strip()) >= 4:
+                names[w.strip()] = key
+    # app names are left out: many are everyday words ("pages", "music", "teams", "terminal")
+    return {n: v for n, v in names.items() if len(n) >= 4 and n not in ("office",)}
+
+
+KNOWN_PLACES = None
+
+
+def places_not_in_data(conn, question):
+    # e.g. "How much do I bite my nails on TikTok?" when TikTok never shows up: the model is told up front,
+    # because a small model will otherwise pin some other app's numbers on it
+    global KNOWN_PLACES
+    if KNOWN_PLACES is None:
+        KNOWN_PLACES = known_places()
+    q = question.lower()
+    missing = []
+    for name, target in KNOWN_PLACES.items():
+        if not re.search(r"\b" + re.escape(name) + r"\b", q):
+            continue
+        like = "%" + target.split(".")[0] + "%"
+        row = conn.execute("SELECT 1 FROM activity WHERE lower(COALESCE(domain, '')) LIKE ? "
+                           "OR lower(COALESCE(app, '')) LIKE ? LIMIT 1", (like, like)).fetchone()
+        if row is None:
+            missing.append(name)
+    return missing
+
+
 class ToolRunner:
     def __init__(self, conn, now=None):
         self.conn = conn
         self.analytics = analytics.Analytics(conn, now=now)
+        self.allow_days = True    # set per question by Assistant
 
     def run(self, name, args):
         a = self.analytics
         args = clean_args(args)
+        if name in WHOLE_HISTORY_TOOLS and not self.allow_days:
+            args.pop("days", None)
         try:
             if name == "get_overview":
                 return a.overview(args.get("days"))
             if name == "find_patterns":
                 return a.find_patterns(args.get("behavior", "any"), args.get("days"))
             if name == "habit_rates":
-                return a.habit_rates(args.get("group_by", "category"), args.get("behavior", "any"), args.get("days"))
+                out = a.habit_rates(args.get("group_by", "category"), args.get("behavior", "any"), args.get("days"))
+                for g in out.get("groups", []):
+                    g["significant"] = g["p_value"] < 0.05 and g["events"] >= config.MIN_PATTERN_EVENTS
+                return out
             if name == "trend":
-                return a.trend(args.get("behavior", "any"), args.get("period", "day"), args.get("days", 14))
+                return with_trend_summary(a.trend(args.get("behavior", "any"), args.get("period", "day"),
+                                                  args.get("days", 14)))
             if name == "list_events":
                 return a.list_events(args.get("behavior", "any"), args.get("days", 1), args.get("where"),
                                      min(int(args.get("limit", 20)), 50))
@@ -226,6 +283,27 @@ class ToolRunner:
             return {"error": "unknown tool " + name}
         except (TypeError, ValueError) as error:
             return {"error": "bad arguments: " + str(error)}
+
+
+def with_trend_summary(out):
+    # the model wants "better or worse?" and an average; compute them here so it doesn't do the math itself
+    rows = [r for r in out.get("rows", []) if r.get("observed_hours")]
+    if len(rows) < 2:
+        return out
+    def rate(rs):
+        h = sum(r["observed_hours"] for r in rs)
+        return round(sum(r["events"] for r in rs) / h, 2) if h else None
+    half = len(rows) // 2
+    first, second = rate(rows[:half]), rate(rows[half:])
+    change = (second - first) / first if first else None
+    out["summary"] = {
+        "average_events_per_hour": rate(rows),
+        "first_half_events_per_hour": first, "second_half_events_per_hour": second,
+        "change_percent": round(change * 100) if change is not None else None,
+        "direction": ("about the same" if change is None or abs(change) < 0.15
+                      else "better (fewer habits)" if change < 0 else "worse (more habits)"),
+    }
+    return out
 
 
 # fields the model doesn't need: dropping them makes every prompt shorter and every answer faster
@@ -284,6 +362,14 @@ GROUP_WORDS = {"category": "app category", "where": "app or site", "hour": "hour
                "daytype": "weekday vs weekend", "streak": "session length"}
 
 
+BUTTON_TALK = re.compile(r"[^.!?\n]*\b(tap|press|click) (yes|the button)\b[^.!?\n]*[.!?]?", re.I)
+
+
+def drop_button_talk(text):
+    # only a real proposal shows a Yes button; anything else that mentions one is the model making it up
+    return re.sub(r"[ \t]+\n", "\n", BUTTON_TALK.sub("", text)).strip()
+
+
 def proposal_sentence(p):
     # what Pip says when it proposes a swap change; it only ever asks, never claims it's done
     q = "\u201c" + p.get("text", "") + "\u201d"
@@ -329,10 +415,16 @@ class Assistant:
         #   {"type": "done", "answer", "tool_calls", "seconds"}
         started = time.time()
         today = time.strftime("%A %Y-%m-%d %H:%M", time.localtime(self.tools.analytics.now()))
-        messages = [{"role": "system", "content": SYSTEM_PROMPT + "\nNow: " + today}]
+        system = SYSTEM_PROMPT + "\nNow: " + today
+        missing = places_not_in_data(self.conn, question)
+        if missing:
+            system += ("\nNote: " + ", ".join(missing) + " never appears in the user's data. Say there is no "
+                       "data for it and give no numbers for it.")
+        messages = [{"role": "system", "content": system}]
         messages += history or []
         messages.append({"role": "user", "content": question})
         trace = []
+        self.tools.allow_days = bool(TIME_WORDS.search(question))
         yield {"type": "status", "text": "Thinking"}
         for round_number in range(config.LLM_MAX_TOOL_ROUNDS + 1):
             last_round = round_number == config.LLM_MAX_TOOL_ROUNDS
@@ -350,7 +442,7 @@ class Assistant:
                     yield {"type": "token", "text": text}
             messages.append({"role": "assistant", "content": content, "tool_calls": calls})
             if not calls:
-                yield {"type": "done", "answer": content.strip(), "tool_calls": trace,
+                yield {"type": "done", "answer": drop_button_talk(content), "tool_calls": trace,
                        "seconds": round(time.time() - started, 2)}
                 return
             if content:

@@ -1,4 +1,4 @@
-# Hand-to-Face Tracker
+# Hands Down: Hand-to-Face Habit Tracker
 
 A real-time webcam tool that detects when your hands touch your face (nail biting, skin picking, eye rubbing) and nudges you in the moment. It runs fully on your own machine. No video is saved or sent anywhere.
 
@@ -91,7 +91,7 @@ window tracker ──> activity ─────┘                        ├─
 
 ### The LLM assistant
 
-The model never does arithmetic on raw logs. It gets 7 tools (`get_overview`, `find_patterns`, `habit_rates`, `trend`, `list_events`, `app_usage`, `nudge_stats`) that return computed numbers with sample sizes and CIs. It is told to quote only numbers that come from a tool, to give sample sizes, to say plainly when there is too little data, and not to claim causes. Ask Pip, the little pixel companion in the dashboard's bottom-right corner. Pip introduces itself, asks how you're doing (a hug on hard days, a heart on okay days, a dance or hops on good ones), and then thinks, talks and cheers along with the model while each step and the answer stream in live. Or ask from the command line:
+The model never does arithmetic on raw logs. It gets 9 tools: 7 that return computed numbers with sample sizes and CIs (`get_overview`, `find_patterns`, `habit_rates`, `trend`, `list_events`, `app_usage`, `nudge_stats`), plus `list_swaps` and `propose_swap_change` for your swaps. A few guards live in code rather than in the prompt: pattern questions always use all your data unless you name a time window, each comparison is marked significant or not, the model is warned up front when you ask about a site that never appears in your data, and any talk of a confirm button is removed unless a real swap change was proposed. It is told to quote only numbers that come from a tool, to give sample sizes, to say plainly when there is too little data, and not to claim causes. Ask Pip, the little pixel companion in the dashboard's bottom-right corner. Pip introduces itself, asks how you're doing (a hug on hard days, a heart on okay days, a dance or hops on good ones), and then thinks, talks and cheers along with the model while each step and the answer stream in live. Or ask from the command line:
 
 ```
 python -m backend.assistant "When do I pick my skin the most?" --show-tools
@@ -348,6 +348,7 @@ backend/
   assistant.py   Ollama tool-calling assistant
   bandit.py      Thompson-sampling bandit and the bandit-vs-random stats
   nudges.py      nudge triggers and outcome judging
+  swaps.py       your editable swaps, their results, and Pip's proposals
   server.py      FastAPI: dashboard API, runs the window tracker and nudges
 
 web/             React + TypeScript dashboard (Vite)
